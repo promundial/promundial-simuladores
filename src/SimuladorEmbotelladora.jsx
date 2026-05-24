@@ -2442,7 +2442,7 @@ function DemandaTab({S_, p, wiz}) {
       <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))",gap:12}}>
         {/* Canal mix */}
         <Panel title="Mix de Canales — Volumen & Precio" sub="Distribución del volumen demandado por canal">
-          {mixData.map(({name,vol,precio,color})=>{
+          {mixData.map(({name,vol,precio,desc,color})=>{
             const pct = vol/Math.max(totalVol,0.001);
             return (
               <div key={name} style={{marginBottom:14}}>
