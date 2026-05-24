@@ -872,7 +872,7 @@ export default function SimuladorHospital() {
                 ))}
               </div>
             ) : (
-              <div style={{display:"grid",gridTemplateColumns:"200px 1fr",gap:14}}>
+              <div style={{display:"grid",gridTemplateColumns:"200px 1fr",gap:14,alignItems:"start"}}>
                 <div>
                   <div style={{fontSize:10,color:PM_MUTED,textTransform:"uppercase",letterSpacing:1,marginBottom:8,fontWeight:600}}>Módulo</div>
                   {PARAM_GROUPS.map(g=>(
@@ -891,33 +891,18 @@ export default function SimuladorHospital() {
                       σ = 0 (determinístico)</button>
                   </div>
                 </div>
+                <div style={{background:PM_CARD,borderRadius:10,border:`1px solid ${PM_BORDER}`,padding:"18px 20px"}}>
+                  {PARAM_GROUPS.filter(g=>g.id===activeGroup).map(g=>(
+                    <div key={g.id}>
+                      <div style={{fontSize:15,fontWeight:700,color:PM_GREEN,marginBottom:16}}>{g.icon} {g.label}</div>
+                      {Object.entries(g.params).map(([k,v])=>(
+                        <Slider key={k} param={v} pkey={k} value={params[k]} onChange={handleChange}/>
+                      ))}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
-
-            {/* Sliders panel — full width on mobile, right column on desktop */}
-            <div style={isMobile ? {} : {display:"grid",gridTemplateColumns:"200px 1fr",gap:14}}>
-              {!isMobile && <div/>}{/* spacer for desktop left column */}
-              <div style={{background:PM_CARD,borderRadius:10,border:`1px solid ${PM_BORDER}`,padding:isMobile?"14px 14px":"18px 20px"}}>
-                {isMobile && (
-                  <div style={{marginBottom:12}}>
-                    <div style={{fontSize:10,color:PM_MUTED,marginBottom:6}}>⚡ = KPI palanca · IR: 25%</div>
-                    <button onClick={()=>{
-                      const z={};Object.entries(paramsRef.current).forEach(([k,v])=>{z[k]={...v,std:0};});
-                      setParams(z);paramsRef.current=z;
-                    }} style={{padding:"6px 14px",background:PM_BORDER,border:"none",borderRadius:5,fontSize:11,cursor:"pointer",color:PM_MUTED}}>
-                      σ = 0 (determinístico)</button>
-                  </div>
-                )}
-                {PARAM_GROUPS.filter(g=>g.id===activeGroup).map(g=>(
-                  <div key={g.id}>
-                    <div style={{fontSize:15,fontWeight:700,color:PM_GREEN,marginBottom:16}}>{g.icon} {g.label}</div>
-                    {Object.entries(g.params).map(([k,v])=>(
-                      <Slider key={k} param={v} pkey={k} value={params[k]} onChange={handleChange}/>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            </div>
           </div>
         )}
 
