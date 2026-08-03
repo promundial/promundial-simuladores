@@ -5,6 +5,7 @@ import VNAutos from "./VNAutos";
 import VNMotos from "./VNMotos";
 import SimuladorHospital from "./SimuladorHospital";
 import SimuladorEmbotelladora from "./SimuladorEmbotelladora";
+import SimuladorRentaAutos from "./SimuladorRentaAutos";
 
 const cardStyle = (bg) => ({
   display: "block",
@@ -13,7 +14,7 @@ const cardStyle = (bg) => ({
   textDecoration: "none",
   color: "#fff",
   fontSize: 15,
-  fontWeight: 600,
+  fontWeight: 700,
   background: bg,
   marginBottom: 0,
 });
@@ -68,6 +69,10 @@ export default function App() {
                   🏍️ Venta Motos Nuevas
                   <span style={descStyle}>Funnel comercial motos · Sin devoluciones</span>
                 </Link>
+                <Link to="/renta-autos" style={cardStyle("linear-gradient(135deg,#0f2a3f,#1a4060)")}>
+                  🚗 Renta de Autos
+                  <span style={descStyle}>Mixto: diaria + corporativa · Flota · EVA · EBITDA</span>
+                </Link>
               </div>
 
               {/* Sector Salud */}
@@ -96,12 +101,13 @@ export default function App() {
             </div>
           </div>
         } />
-        <Route path="/taller-autos" element={<TallerAutos />} />
-        <Route path="/taller-motos" element={<TallerMotos />} />
-        <Route path="/vn-autos" element={<VNAutos />} />
-        <Route path="/vn-motos" element={<VNMotos />} />
-        <Route path="/hospital" element={<SimuladorHospital />} />
+        <Route path="/taller-autos"  element={<TallerAutos />} />
+        <Route path="/taller-motos"  element={<TallerMotos />} />
+        <Route path="/vn-autos"      element={<VNAutos />} />
+        <Route path="/vn-motos"      element={<VNMotos />} />
+        <Route path="/hospital"      element={<SimuladorHospital />} />
         <Route path="/embotelladora" element={<SimuladorEmbotelladora />} />
+        <Route path="/renta-autos"   element={<SimuladorRentaAutos />} />
       </Routes>
     </BrowserRouter>
   );
