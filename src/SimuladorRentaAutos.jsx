@@ -37,6 +37,8 @@ function tarifaMixMedia(mix){const t=mix.reduce((s,c)=>s+c.mix_pct,0)||1;return 
 function tarifaMixStd(mix){const t=mix.reduce((s,c)=>s+c.mix_pct,0)||1;return Math.sqrt(mix.reduce((s,c)=>s+(c.mix_pct/t)*c.tarifa_std**2,0));}
 function descMixMedio(mix){const t=mix.reduce((s,c)=>s+c.mix_pct,0)||1;return mix.reduce((s,c)=>s+(c.mix_pct/t)*(c.desc_pct||0),0);}
 function valorMixMedio(mix){const t=mix.reduce((s,c)=>s+c.mix_pct,0)||1;return mix.reduce((s,c)=>s+(c.mix_pct/t)*(c.valor||0),0);}
+function vidaMixMedia(mix){const t=mix.reduce((s,c)=>s+c.mix_pct,0)||1;return mix.reduce((s,c)=>s+(c.mix_pct/t)*(c.vida||4),0);}
+function residualMixMedio(mix){const t=mix.reduce((s,c)=>s+c.mix_pct,0)||1;return mix.reduce((s,c)=>s+(c.mix_pct/t)*(c.residual||35),0);}
 function sampleMix(mix){
   const raw=mix.map(c=>Math.max(0,c.mix_pct+randn()*c.mix_std));
   const total=raw.reduce((s,v)=>s+v,0)||1;
@@ -44,37 +46,39 @@ function sampleMix(mix){
   const tarifa=mix.reduce((s,c,i)=>s+w[i]*Math.max(0,c.tarifa_mean+randn()*c.tarifa_std),0);
   const desc=mix.reduce((s,c,i)=>s+w[i]*Math.max(0,Math.min((c.desc_pct||0)+randn()*(c.desc_std||0),30))/100,0);
   const valor=mix.reduce((s,c,i)=>s+w[i]*(c.valor||0),0);
-  return{tarifa,desc,valor};
+  const vida=mix.reduce((s,c,i)=>s+w[i]*(c.vida||4),0);
+  const residual=mix.reduce((s,c,i)=>s+w[i]*(c.residual||35),0)/100;
+  return{tarifa,desc,valor,vida,residual};
 }
 
 // ─── Default mix data ──────────────────────────────────────────────
 const DEFAULT_MIX_DIARIA = [
-  {cat:"Economy",          mix_pct:18,mix_std:2,tarifa_mean:35, tarifa_std:5, desc_pct:5, desc_std:1,valor:12000},
-  {cat:"Compact",          mix_pct:16,mix_std:2,tarifa_mean:42, tarifa_std:6, desc_pct:5, desc_std:1,valor:15000},
-  {cat:"Intermediate",     mix_pct:14,mix_std:2,tarifa_mean:52, tarifa_std:7, desc_pct:4, desc_std:1,valor:18000},
-  {cat:"Full Size",        mix_pct:12,mix_std:2,tarifa_mean:65, tarifa_std:8, desc_pct:4, desc_std:1,valor:22000},
-  {cat:"Premium",          mix_pct:8, mix_std:2,tarifa_mean:90, tarifa_std:12,desc_pct:3, desc_std:1,valor:32000},
-  {cat:"Luxury",           mix_pct:5, mix_std:1,tarifa_mean:150,tarifa_std:20,desc_pct:2, desc_std:1,valor:65000},
-  {cat:"Compact SUV",      mix_pct:10,mix_std:2,tarifa_mean:60, tarifa_std:8, desc_pct:4, desc_std:1,valor:25000},
-  {cat:"Intermediate SUV", mix_pct:8, mix_std:2,tarifa_mean:75, tarifa_std:10,desc_pct:4, desc_std:1,valor:32000},
-  {cat:"Full Size SUV",    mix_pct:4, mix_std:1,tarifa_mean:110,tarifa_std:15,desc_pct:3, desc_std:1,valor:45000},
-  {cat:"Pickup",           mix_pct:2, mix_std:1,tarifa_mean:85, tarifa_std:10,desc_pct:3, desc_std:1,valor:35000},
-  {cat:"Minivan",          mix_pct:2, mix_std:1,tarifa_mean:70, tarifa_std:10,desc_pct:4, desc_std:1,valor:28000},
-  {cat:"Specialty",        mix_pct:1, mix_std:1,tarifa_mean:200,tarifa_std:30,desc_pct:2, desc_std:1,valor:80000},
+  {cat:"Economy",          mix_pct:18,mix_std:2,tarifa_mean:35, tarifa_std:5, desc_pct:5, desc_std:1,valor:12000,vida:4,residual:30},
+  {cat:"Compact",          mix_pct:16,mix_std:2,tarifa_mean:42, tarifa_std:6, desc_pct:5, desc_std:1,valor:15000,vida:4,residual:30},
+  {cat:"Intermediate",     mix_pct:14,mix_std:2,tarifa_mean:52, tarifa_std:7, desc_pct:4, desc_std:1,valor:18000,vida:4,residual:32},
+  {cat:"Full Size",        mix_pct:12,mix_std:2,tarifa_mean:65, tarifa_std:8, desc_pct:4, desc_std:1,valor:22000,vida:4,residual:33},
+  {cat:"Premium",          mix_pct:8, mix_std:2,tarifa_mean:90, tarifa_std:12,desc_pct:3, desc_std:1,valor:32000,vida:3,residual:35},
+  {cat:"Luxury",           mix_pct:5, mix_std:1,tarifa_mean:150,tarifa_std:20,desc_pct:2, desc_std:1,valor:65000,vida:3,residual:40},
+  {cat:"Compact SUV",      mix_pct:10,mix_std:2,tarifa_mean:60, tarifa_std:8, desc_pct:4, desc_std:1,valor:25000,vida:4,residual:33},
+  {cat:"Intermediate SUV", mix_pct:8, mix_std:2,tarifa_mean:75, tarifa_std:10,desc_pct:4, desc_std:1,valor:32000,vida:4,residual:35},
+  {cat:"Full Size SUV",    mix_pct:4, mix_std:1,tarifa_mean:110,tarifa_std:15,desc_pct:3, desc_std:1,valor:45000,vida:4,residual:38},
+  {cat:"Pickup",           mix_pct:2, mix_std:1,tarifa_mean:85, tarifa_std:10,desc_pct:3, desc_std:1,valor:35000,vida:5,residual:40},
+  {cat:"Minivan",          mix_pct:2, mix_std:1,tarifa_mean:70, tarifa_std:10,desc_pct:4, desc_std:1,valor:28000,vida:4,residual:32},
+  {cat:"Specialty",        mix_pct:1, mix_std:1,tarifa_mean:200,tarifa_std:30,desc_pct:2, desc_std:1,valor:80000,vida:3,residual:45},
 ];
 const DEFAULT_MIX_CORP = [
-  {cat:"Economy",          mix_pct:10,mix_std:2,tarifa_mean:650, tarifa_std:80, desc_pct:12,desc_std:2,valor:12000},
-  {cat:"Compact",          mix_pct:12,mix_std:2,tarifa_mean:780, tarifa_std:90, desc_pct:12,desc_std:2,valor:15000},
-  {cat:"Intermediate",     mix_pct:15,mix_std:2,tarifa_mean:950, tarifa_std:100,desc_pct:10,desc_std:2,valor:18000},
-  {cat:"Full Size",        mix_pct:14,mix_std:2,tarifa_mean:1100,tarifa_std:120,desc_pct:10,desc_std:2,valor:22000},
-  {cat:"Premium",          mix_pct:10,mix_std:2,tarifa_mean:1500,tarifa_std:180,desc_pct:8, desc_std:2,valor:32000},
-  {cat:"Luxury",           mix_pct:5, mix_std:1,tarifa_mean:2200,tarifa_std:300,desc_pct:5, desc_std:1,valor:65000},
-  {cat:"Compact SUV",      mix_pct:12,mix_std:2,tarifa_mean:1050,tarifa_std:120,desc_pct:10,desc_std:2,valor:25000},
-  {cat:"Intermediate SUV", mix_pct:10,mix_std:2,tarifa_mean:1250,tarifa_std:150,desc_pct:8, desc_std:2,valor:32000},
-  {cat:"Full Size SUV",    mix_pct:5, mix_std:1,tarifa_mean:1600,tarifa_std:200,desc_pct:7, desc_std:1,valor:45000},
-  {cat:"Pickup",           mix_pct:4, mix_std:1,tarifa_mean:1200,tarifa_std:150,desc_pct:8, desc_std:1,valor:35000},
-  {cat:"Minivan",          mix_pct:2, mix_std:1,tarifa_mean:1100,tarifa_std:130,desc_pct:8, desc_std:1,valor:28000},
-  {cat:"Specialty",        mix_pct:1, mix_std:1,tarifa_mean:3000,tarifa_std:400,desc_pct:3, desc_std:1,valor:80000},
+  {cat:"Economy",          mix_pct:10,mix_std:2,tarifa_mean:650, tarifa_std:80, desc_pct:12,desc_std:2,valor:12000,vida:5,residual:30},
+  {cat:"Compact",          mix_pct:12,mix_std:2,tarifa_mean:780, tarifa_std:90, desc_pct:12,desc_std:2,valor:15000,vida:5,residual:30},
+  {cat:"Intermediate",     mix_pct:15,mix_std:2,tarifa_mean:950, tarifa_std:100,desc_pct:10,desc_std:2,valor:18000,vida:5,residual:32},
+  {cat:"Full Size",        mix_pct:14,mix_std:2,tarifa_mean:1100,tarifa_std:120,desc_pct:10,desc_std:2,valor:22000,vida:5,residual:33},
+  {cat:"Premium",          mix_pct:10,mix_std:2,tarifa_mean:1500,tarifa_std:180,desc_pct:8, desc_std:2,valor:32000,vida:4,residual:35},
+  {cat:"Luxury",           mix_pct:5, mix_std:1,tarifa_mean:2200,tarifa_std:300,desc_pct:5, desc_std:1,valor:65000,vida:4,residual:40},
+  {cat:"Compact SUV",      mix_pct:12,mix_std:2,tarifa_mean:1050,tarifa_std:120,desc_pct:10,desc_std:2,valor:25000,vida:5,residual:33},
+  {cat:"Intermediate SUV", mix_pct:10,mix_std:2,tarifa_mean:1250,tarifa_std:150,desc_pct:8, desc_std:2,valor:32000,vida:5,residual:35},
+  {cat:"Full Size SUV",    mix_pct:5, mix_std:1,tarifa_mean:1600,tarifa_std:200,desc_pct:7, desc_std:1,valor:45000,vida:5,residual:38},
+  {cat:"Pickup",           mix_pct:4, mix_std:1,tarifa_mean:1200,tarifa_std:150,desc_pct:8, desc_std:1,valor:35000,vida:6,residual:40},
+  {cat:"Minivan",          mix_pct:2, mix_std:1,tarifa_mean:1100,tarifa_std:130,desc_pct:8, desc_std:1,valor:28000,vida:5,residual:32},
+  {cat:"Specialty",        mix_pct:1, mix_std:1,tarifa_mean:3000,tarifa_std:400,desc_pct:3, desc_std:1,valor:80000,vida:4,residual:45},
 ];
 
 const DAYS_PER_MONTH = 30.44; // promedio exacto días/mes
@@ -84,9 +88,6 @@ const GROUPS = [
   { id:"flota", label:"🚗 Flota", params:{
     flota_diaria:        {mean:80,  std:0,   min:1,   max:5000,  label:"Flota renta diaria (unidades)",        unit:"u"},
     flota_corp:          {mean:40,  std:0,   min:0,   max:5000,  label:"Flota contratos corporativos",          unit:"u"},
-    valor_std_pct:       {mean:5,   std:0,   min:0,   max:20,    label:"Variabilidad valor vehículos σ (%)",    unit:"%"},
-    vida_util:           {mean:4,   std:0,   min:1,   max:10,    label:"Vida útil flota (años)",                unit:"yr"},
-    valor_residual_pct:  {mean:35,  std:3,   min:5,   max:70,    label:"Valor residual al cierre (%)",          unit:"%"},
   }},
   { id:"oae_disp", label:"📐 OAE — Disponibilidad", params:{
     // Contexto operativo
@@ -159,9 +160,6 @@ function simOne(p,mixD,mixC){
   const flota_d = Math.max(0, S(p.flota_diaria));
   const flota_c = Math.max(0, S(p.flota_corp));
   const flota_total = flota_d + flota_c || 1;
-  const vida = Math.max(0.1, S(p.vida_util));
-  const resid = Math.max(0, Math.min(1, S(p.valor_residual_pct)/100));
-  const val_std_pct = Math.max(0, S(p.valor_std_pct)/100);
 
   // ── OAE D: Disponibilidad ──────────────────────────────────────────
   // D se calcula desde KPIs operativos reales, no % abstractos
@@ -207,12 +205,12 @@ function simOne(p,mixD,mixC){
   const ocup_c = Math.max(0, ocup_c_base - util_adj * 0.5); // corp: contratos más estables
 
   // ── Mix samples ────────────────────────────────────────────────────
-  const {tarifa:tarifa_d_rack, desc:desc_d_mix, valor:val_d_base} = sampleMix(mixD);
-  const {tarifa:tarifa_c_rack, desc:desc_c_mix, valor:val_c_base} = sampleMix(mixC);
+  const {tarifa:tarifa_d_rack, desc:desc_d_mix, valor:val_d_base, vida:vida_d, residual:resid_d} = sampleMix(mixD);
+  const {tarifa:tarifa_c_rack, desc:desc_c_mix, valor:val_c_base, vida:vida_c, residual:resid_c} = sampleMix(mixC);
 
-  // Valor de vehículo con variabilidad σ
-  const val_d = Math.max(1000, val_d_base * (1 + randn() * val_std_pct));
-  const val_c = Math.max(1000, val_c_base * (1 + randn() * val_std_pct));
+  // Valor de vehículo (sin variabilidad σ separada — viene del mix directamente)
+  const val_d = Math.max(1000, val_d_base);
+  const val_c = Math.max(1000, val_c_base);
 
   // ── OAE Y: Yield ───────────────────────────────────────────────────
   const yield_extra_d = S(p.upgrade_gratuito_pct)/100 + S(p.tarifa_negociada_pct)/100;
@@ -272,9 +270,13 @@ function simOne(p,mixD,mixC){
   // brecha_disp + brecha_util + brecha_yield + brecha_cal = Cp - Ve ✓
 
   // ── P&L financiero ─────────────────────────────────────────────────
-  const rev_total = Ve; // revenue = valor entregado neto
-  const val_total_flota = flota_d * val_d + flota_c * val_c;
-  const dep_anual = val_total_flota * (1 - resid) / vida;
+  const rev_total = Ve;
+  const val_flota_d = flota_d * val_d;
+  const val_flota_c = flota_c * val_c;
+  const val_total_flota = val_flota_d + val_flota_c;
+  // Depreciación ponderada por canal — cada categoría tiene su propia vida útil y residual
+  const dep_anual = val_flota_d * (1 - resid_d) / Math.max(0.1, vida_d)
+                  + val_flota_c * (1 - resid_c) / Math.max(0.1, vida_c);
 
   const mant_pct = S(p.mant_pct_valor) / 100;
   const seg_pct  = S(p.seguro_pct_valor) / 100;
@@ -317,6 +319,17 @@ function simOne(p,mixD,mixC){
   // ROIC = NOPAT / Capital Invertido
   const roic = val_total_flota > 0 ? nopat / val_total_flota : 0;
 
+  // DPU — Depreciation Per Unit per month (estándar Hertz/Avis)
+  // = depreciación anual / (total autos × 12 meses)
+  // Incluye el efecto del valor residual — neto de lo que se recupera al vender
+  const dpu = flota_total > 0 ? dep_anual / (flota_total * 12) : 0;
+
+  // Revenue per available car per month (RevPAC) — para comparar con DPU
+  const revpac = flota_total > 0 ? rev_total / (flota_total * 12) : 0;
+
+  // Margen DPU: cuánto del RevPAC se consume solo en depreciación
+  const dpu_coverage = revpac > 0 ? dpu / revpac : 0;
+
   return {
     // P&L
     rev_total, ebitda, ebit, ebt, util_neta, eva,
@@ -326,6 +339,7 @@ function simOne(p,mixD,mixC){
     margen_ebitda: rev_total > 0 ? ebitda / rev_total : 0,
     margen_neto:   rev_total > 0 ? util_neta / rev_total : 0,
     roic, rev_por_auto: rev_total / flota_total,
+    dpu, revpac, dpu_coverage,
     // OAE
     D, U, Y: Y_pond, Q, OAE,
     Pe: Cp, Pe_capturado,
@@ -347,7 +361,7 @@ function runSim(params, mixD, mixC, N=3000){
   const keys = [
     "rev_total","ebitda","ebit","ebt","util_neta","eva","dep_anual","intereses","impuesto","nopat",
     "costo_flota","costo_personal","gastos_fijos","val_total_flota","deuda",
-    "margen_ebitda","margen_neto","roic","rev_por_auto",
+    "margen_ebitda","margen_neto","roic","rev_por_auto","dpu","revpac","dpu_coverage",
     "D","U","Y","Q","OAE","Pe","Pe_capturado",
     "brecha_disp","brecha_util","brecha_yield","brecha_cal",
     "Vc","Ve","tarifa_d_net","tarifa_c_net","val_d","val_c",
@@ -471,9 +485,11 @@ function MixTable({mix,setMix,tarifaUnit}){
           ["Desviación σ","±$"+fmtF(Math.round(tSd)),C.blue],
           ["Desc. pond. μ",dMed.toFixed(1)+"%",dMed>8?C.red:dMed>5?C.orange:C.teal],
           ["Tarifa neta μ",esD?"$"+tNeta.toFixed(2):"$"+fmtF(Math.round(tNeta)),C.deep],
-          ["Valor flota pond. μ","$"+fmtF(Math.round(vMed)),C.navy]
+          ["Valor flota pond. μ","$"+fmtF(Math.round(vMed)),C.navy],
+          ["Vida útil pond.","$"+vidaMixMedia(mix).toFixed(1)+" yr",C.teal],
+          ["Residual pond.",residualMixMedio(mix).toFixed(1)+"%",C.orange],
         ].map(([l,v,col])=>(
-          <div key={l}><div style={{fontSize:10,color:C.muted}}>{l}</div><div style={{fontSize:17,fontWeight:700,color:col,fontFamily:mono}}>{v}</div></div>
+          <div key={l}><div style={{fontSize:10,color:C.muted}}>{l}</div><div style={{fontSize:15,fontWeight:700,color:col,fontFamily:mono}}>{v}</div></div>
         ))}
         <div style={{marginLeft:"auto",display:"flex",alignItems:"center"}}>
           <span style={{fontSize:12,fontWeight:700,padding:"4px 10px",borderRadius:4,background:ok?"#1A5C3820":"#B3404020",color:ok?C.green:C.red,border:`1px solid ${ok?C.green:C.red}50`}}>Σ = {total.toFixed(1)}% {ok?"✓":"⚠"}</span>
@@ -482,7 +498,7 @@ function MixTable({mix,setMix,tarifaUnit}){
       <div style={{overflowX:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
           <thead><tr style={{background:C.deep,color:"#fff"}}>
-            {["Categoría","% Mix μ","% Mix σ",`Tarifa μ (${tarifaUnit})`,`Tarifa σ`,"Desc % μ","Desc % σ","Valor auto ($)","Tarifa Neta μ"].map(h=>(
+            {["Categoría","% Mix μ","% Mix σ",`Tarifa μ (${tarifaUnit})`,`Tarifa σ`,"Desc % μ","Desc % σ","Valor ($)","Vida (yr)","Residual (%)","Tarifa Neta μ"].map(h=>(
               <th key={h} style={{padding:"6px 8px",textAlign:"left",fontFamily:mono,fontWeight:600,whiteSpace:"nowrap"}}>{h}</th>
             ))}</tr></thead>
           <tbody>{mix.map((c,i)=>{
@@ -496,6 +512,8 @@ function MixTable({mix,setMix,tarifaUnit}){
               <td style={{padding:"3px 4px"}}><input type="number" value={dp} min={0} max={30} step={0.5} onChange={e=>upd(i,"desc_pct",parseFloat(e.target.value))} style={{...inp,border:`1px solid ${dp>10?C.red:dp>7?C.orange:C.border}`,color:dp>10?C.red:dp>7?C.orange:C.text}}/></td>
               <td style={{padding:"3px 4px"}}><input type="number" value={c.desc_std||0} min={0} max={5} step={0.25} onChange={e=>upd(i,"desc_std",parseFloat(e.target.value))} style={inp}/></td>
               <td style={{padding:"3px 4px"}}><input type="number" value={c.valor||0} onChange={e=>upd(i,"valor",parseFloat(e.target.value))} style={{...inp,border:`1px solid ${C.navy}55`,color:C.navy,fontWeight:600}}/></td>
+              <td style={{padding:"3px 4px"}}><input type="number" value={c.vida||4} min={1} max={15} step={0.5} onChange={e=>upd(i,"vida",parseFloat(e.target.value))} style={{...inp,color:C.teal,fontWeight:600}}/></td>
+              <td style={{padding:"3px 4px"}}><input type="number" value={c.residual||35} min={0} max={80} step={1} onChange={e=>upd(i,"residual",parseFloat(e.target.value))} style={{...inp,color:C.orange,fontWeight:600}}/></td>
               <td style={{padding:"4px 8px",fontFamily:mono,textAlign:"right"}}>
                 <span style={{color:C.deep,fontWeight:600}}>{esD?"$"+neta.toFixed(2):"$"+fmtF(Math.round(neta))}</span>
                 <span style={{color:dp>10?C.red:C.muted,fontSize:10,marginLeft:4}}>−{dp.toFixed(1)}% ({(w*100).toFixed(1)}%)</span>
@@ -581,8 +599,6 @@ export default function SimuladorRentaAutos(){
     setParams(z);paramsRef.current=z;
   };
 
-  const valorDiariaMed=valorMixMedio(mixDiaria), valorCorpMed=valorMixMedio(mixCorp);
-
   return(
     <div style={{fontFamily:sans,background:C.light,minHeight:"100vh",color:C.text}}>
 
@@ -630,9 +646,13 @@ export default function SimuladorRentaAutos(){
                 <ParamRow key={k} k={k} p={v} val={params[k]||v} onChange={handleChange}/>
               ))}
               <div style={{marginTop:12,padding:"10px 14px",background:`${C.navy}10`,borderRadius:6,border:`1px solid ${C.navy}30`,display:"flex",gap:24,flexWrap:"wrap"}}>
-                <div><div style={{fontSize:10,color:C.muted}}>Valor pond. flota diaria (del mix)</div><div style={{fontSize:15,fontWeight:700,color:C.navy,fontFamily:mono}}>${fmtF(Math.round(valorDiariaMed))}</div></div>
-                <div><div style={{fontSize:10,color:C.muted}}>Valor pond. flota corporativa (del mix)</div><div style={{fontSize:15,fontWeight:700,color:C.navy,fontFamily:mono}}>${fmtF(Math.round(valorCorpMed))}</div></div>
-                <div><div style={{fontSize:10,color:C.muted}}>Valor total estimado flota</div><div style={{fontSize:15,fontWeight:700,color:C.deep,fontFamily:mono}}>${fmtF(Math.round(valorDiariaMed*params.flota_diaria.mean+valorCorpMed*params.flota_corp.mean))}</div></div>
+                <div><div style={{fontSize:10,color:C.muted}}>Valor pond. flota diaria (del mix)</div><div style={{fontSize:15,fontWeight:700,color:C.navy,fontFamily:mono}}>${fmtF(Math.round(valorMixMedio(mixDiaria)))}</div></div>
+                <div><div style={{fontSize:10,color:C.muted}}>Valor pond. flota corporativa (del mix)</div><div style={{fontSize:15,fontWeight:700,color:C.navy,fontFamily:mono}}>${fmtF(Math.round(valorMixMedio(mixCorp)))}</div></div>
+                <div><div style={{fontSize:10,color:C.muted}}>Valor total estimado flota</div><div style={{fontSize:15,fontWeight:700,color:C.deep,fontFamily:mono}}>${fmtF(Math.round(valorMixMedio(mixDiaria)*params.flota_diaria.mean+valorMixMedio(mixCorp)*params.flota_corp.mean))}</div></div>
+                <div><div style={{fontSize:10,color:C.muted}}>Dep. anual estimada (del mix)</div><div style={{fontSize:15,fontWeight:700,color:C.teal,fontFamily:mono}}>${fmtF(Math.round(
+                  valorMixMedio(mixDiaria)*params.flota_diaria.mean*(1-residualMixMedio(mixDiaria)/100)/vidaMixMedia(mixDiaria)+
+                  valorMixMedio(mixCorp)*params.flota_corp.mean*(1-residualMixMedio(mixCorp)/100)/vidaMixMedia(mixCorp)
+                ))}/año</div></div>
               </div>
             </Section>
 
@@ -767,6 +787,52 @@ export default function SimuladorRentaAutos(){
               <KpiCard label="Rev./auto/año" icon="🚗" val={fmt$(S_.rev_por_auto.p50)} p10={fmt$(S_.rev_por_auto.p10)} p90={fmt$(S_.rev_por_auto.p90)} color={C.orange}/>
               <KpiCard label="Tarifa Diaria Neta" icon="📅" val={"$"+S_.tarifa_d_net.p50.toFixed(2)+"/d"} p10={"$"+S_.tarifa_d_net.p10.toFixed(2)} p90={"$"+S_.tarifa_d_net.p90.toFixed(2)} color={C.deep}/>
               <KpiCard label="Valor Flota Total" icon="🚙" val={fmt$(S_.val_total_flota.p50)} p10={fmt$(S_.val_total_flota.p10)} p90={fmt$(S_.val_total_flota.p90)} color={C.navy}/>
+            </div>
+
+            {/* DPU Panel — estándar Hertz/Avis */}
+            <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"18px 20px",marginBottom:14,borderTop:`3px solid ${C.teal}`}}>
+              <div style={{fontSize:13,fontWeight:700,color:C.deep,marginBottom:4}}>🏷️ DPU — Depreciation Per Unit (estándar Hertz / Avis)</div>
+              <div style={{fontSize:11,color:C.muted,marginBottom:14}}>
+                Costo neto de depreciación por vehículo por mes, ya descontado el valor residual al momento de la venta. Compara con el RevPAC para ver cuánto del ingreso se consume solo en depreciar la flota.
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:12}}>
+                {/* DPU */}
+                <div style={{background:C.light,borderRadius:8,padding:"14px 16px",border:`1px solid ${C.border}`}}>
+                  <div style={{fontSize:10,color:C.muted,textTransform:"uppercase",letterSpacing:1}}>DPU ($/auto/mes)</div>
+                  <div style={{fontSize:26,fontWeight:800,color:C.teal,fontFamily:mono,margin:"6px 0 3px"}}>{fmt$(S_.dpu.p50)}</div>
+                  <div style={{fontSize:10,color:C.muted}}>P10 {fmt$(S_.dpu.p10)} · P90 {fmt$(S_.dpu.p90)}</div>
+                  <div style={{fontSize:10,color:C.muted,marginTop:4}}>Dep. anual / (flota × 12)</div>
+                </div>
+                {/* RevPAC */}
+                <div style={{background:C.light,borderRadius:8,padding:"14px 16px",border:`1px solid ${C.border}`}}>
+                  <div style={{fontSize:10,color:C.muted,textTransform:"uppercase",letterSpacing:1}}>RevPAC ($/auto/mes)</div>
+                  <div style={{fontSize:26,fontWeight:800,color:C.blue,fontFamily:mono,margin:"6px 0 3px"}}>{fmt$(S_.revpac.p50)}</div>
+                  <div style={{fontSize:10,color:C.muted}}>P10 {fmt$(S_.revpac.p10)} · P90 {fmt$(S_.revpac.p90)}</div>
+                  <div style={{fontSize:10,color:C.muted,marginTop:4}}>Revenue neto / (flota × 12)</div>
+                </div>
+                {/* DPU/RevPAC ratio */}
+                <div style={{background:C.light,borderRadius:8,padding:"14px 16px",border:`1px solid ${C.border}`}}>
+                  <div style={{fontSize:10,color:C.muted,textTransform:"uppercase",letterSpacing:1}}>DPU como % del RevPAC</div>
+                  <div style={{fontSize:26,fontWeight:800,
+                    color:S_.dpu_coverage.p50<0.15?C.green:S_.dpu_coverage.p50<0.25?C.orange:C.red,
+                    fontFamily:mono,margin:"6px 0 3px"}}>{pct(S_.dpu_coverage.p50)}</div>
+                  <div style={{fontSize:10,color:C.muted}}>P10 {pct(S_.dpu_coverage.p10)} · P90 {pct(S_.dpu_coverage.p90)}</div>
+                  <div style={{fontSize:10,color:C.muted,marginTop:4,fontStyle:"italic"}}>
+                    {S_.dpu_coverage.p50<0.15?"✓ Flota bien amortizada":S_.dpu_coverage.p50<0.25?"⚠ Deprec. consume ¼ del ingreso":"✗ Deprec. excesiva vs. revenue"}
+                  </div>
+                </div>
+                {/* Días mínimos para cubrir DPU */}
+                <div style={{background:C.light,borderRadius:8,padding:"14px 16px",border:`1px solid ${C.border}`}}>
+                  <div style={{fontSize:10,color:C.muted,textTransform:"uppercase",letterSpacing:1}}>Días/mes para cubrir DPU</div>
+                  <div style={{fontSize:26,fontWeight:800,color:C.navy,fontFamily:mono,margin:"6px 0 3px"}}>
+                    {S_.tarifa_d_net.p50>0 ? (S_.dpu.p50/S_.tarifa_d_net.p50).toFixed(1) : "—"} d
+                  </div>
+                  <div style={{fontSize:10,color:C.muted}}>DPU ÷ tarifa diaria neta</div>
+                  <div style={{fontSize:10,color:C.muted,marginTop:4,fontStyle:"italic"}}>
+                    Días mínimos rentado/mes solo para pagar la depreciación
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* Estructura de costos */}
