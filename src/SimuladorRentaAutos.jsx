@@ -122,6 +122,30 @@ const GROUPS = [
     reclamos_seguro:     {mean:1.5, std:0.5, min:0,   max:10,    label:"Reclamos de seguro pendientes (%)",     unit:"%"},
     compensaciones:      {mean:0.5, std:0.2, min:0,   max:5,     label:"Créditos/compensaciones por quejas (%)",unit:"%"},
   }},
+  { id:"anciliares", label:"💼 Ingresos Anciliares", params:{
+    // Seguros — canal diario (por contrato)
+    cdw_precio:          {mean:18,  std:3,   min:0,   max:80,    label:"CDW/LDW — precio/contrato ($)",            unit:"$"},
+    cdw_attach:          {mean:65,  std:8,   min:0,   max:100,   label:"CDW/LDW — attach rate (%)",               unit:"%"},
+    sli_precio:          {mean:8,   std:2,   min:0,   max:40,    label:"SLI responsabilidad civil — precio/contrato ($)", unit:"$"},
+    sli_attach:          {mean:40,  std:8,   min:0,   max:100,   label:"SLI — attach rate (%)",                   unit:"%"},
+    pai_precio:          {mean:5,   std:1,   min:0,   max:20,    label:"PAI protección personal — precio/contrato ($)", unit:"$"},
+    pai_attach:          {mean:25,  std:5,   min:0,   max:100,   label:"PAI — attach rate (%)",                   unit:"%"},
+    // Extras — canal diario (por contrato)
+    gps_precio:          {mean:10,  std:2,   min:0,   max:30,    label:"GPS/Navegador — precio/contrato ($)",      unit:"$"},
+    gps_attach:          {mean:30,  std:8,   min:0,   max:100,   label:"GPS — attach rate (%)",                   unit:"%"},
+    silla_precio:        {mean:12,  std:2,   min:0,   max:40,    label:"Silla infantil — precio/contrato ($)",     unit:"$"},
+    silla_attach:        {mean:15,  std:5,   min:0,   max:100,   label:"Silla infantil — attach rate (%)",        unit:"%"},
+    conductor_precio:    {mean:10,  std:2,   min:0,   max:30,    label:"Conductor adicional — precio/contrato ($)",unit:"$"},
+    conductor_attach:    {mean:20,  std:5,   min:0,   max:100,   label:"Conductor adicional — attach rate (%)",   unit:"%"},
+    combustible_precio:  {mean:25,  std:5,   min:0,   max:80,    label:"Tanque prepago — precio/contrato ($)",    unit:"$"},
+    combustible_attach:  {mean:20,  std:5,   min:0,   max:100,   label:"Tanque prepago — attach rate (%)",        unit:"%"},
+    // Road assistance — aplica a toda la flota
+    road_assist_precio:  {mean:6,   std:1,   min:0,   max:20,    label:"Road assistance — precio/contrato ($)",   unit:"$"},
+    road_assist_attach:  {mean:50,  std:8,   min:0,   max:100,   label:"Road assistance — attach rate (%)",       unit:"%"},
+    // Margen anciliar (casi todos son margen alto — seguros ~80%, extras ~60%)
+    margen_seguros:      {mean:78,  std:5,   min:30,  max:95,    label:"Margen bruto seguros (%)",                 unit:"%"},
+    margen_extras:       {mean:62,  std:8,   min:20,  max:90,    label:"Margen bruto extras & road assist (%)",   unit:"%"},
+  }},
   { id:"costos", label:"🔧 Costos Operativos", params:{
     mant_pct_valor:      {mean:1.2, std:0.2, min:0,   max:5,     label:"Mantenimiento (% valor auto/año)",      unit:"%"},
     seguro_pct_valor:    {mean:3.5, std:0.5, min:0.5, max:10,    label:"Seguro (% valor auto/año)",             unit:"%"},
@@ -269,8 +293,35 @@ function simOne(p,mixD,mixC){
   // Verificación interna: brecha_total debe = Cp - Pe_capturado
   // brecha_disp + brecha_util + brecha_yield + brecha_cal = Cp - Ve ✓
 
-  // ── P&L financiero ─────────────────────────────────────────────────
-  const rev_total = Ve;
+  // ── Ingresos Anciliares ────────────────────────────────────────────
+  // Contratos diarios al año = flota_d × 365 × ocup_d × D / días_prom_contrato
+  // Usamos días_prom_contrato = 3.5 (hardcoded default — no es param crítico)
+  const contratos_d_año = flota_d * 365 * ocup_d * D / 3.5;
+
+  // Seguros (precio por contrato × attach rate)
+  const rev_cdw  = contratos_d_año * S(p.cdw_precio)  * S(p.cdw_attach)/100;
+  const rev_sli  = contratos_d_año * S(p.sli_precio)  * S(p.sli_attach)/100;
+  const rev_pai  = contratos_d_año * S(p.pai_precio)  * S(p.pai_attach)/100;
+  const rev_seguros = rev_cdw + rev_sli + rev_pai;
+
+  // Extras (precio por contrato × attach rate)
+  const rev_gps       = contratos_d_año * S(p.gps_precio)       * S(p.gps_attach)/100;
+  const rev_silla     = contratos_d_año * S(p.silla_precio)      * S(p.silla_attach)/100;
+  const rev_conductor = contratos_d_año * S(p.conductor_precio)  * S(p.conductor_attach)/100;
+  const rev_combustible= contratos_d_año* S(p.combustible_precio)* S(p.combustible_attach)/100;
+  const rev_road      = contratos_d_año * S(p.road_assist_precio)* S(p.road_assist_attach)/100;
+  const rev_extras    = rev_gps + rev_silla + rev_conductor + rev_combustible + rev_road;
+
+  const rev_anciliar_bruto = rev_seguros + rev_extras;
+
+  // Margen anciliar
+  const mg_seg = Math.max(0, Math.min(1, S(p.margen_seguros)/100));
+  const mg_ext = Math.max(0, Math.min(1, S(p.margen_extras)/100));
+  const margen_anciliar = rev_seguros * mg_seg + rev_extras * mg_ext;
+  // Costo anciliar (pagos a aseguradoras, proveedores GPS, etc.)
+  const costo_anciliar = rev_anciliar_bruto - margen_anciliar;
+  const rev_flota  = Ve;                               // revenue renta (OAE)
+  const rev_total  = rev_flota + rev_anciliar_bruto;   // revenue total
   const val_flota_d = flota_d * val_d;
   const val_flota_c = flota_c * val_c;
   const val_total_flota = val_flota_d + val_flota_c;
@@ -297,7 +348,7 @@ function simOne(p,mixD,mixC){
     S(p.sistemas_crm) + S(p.marketing_mes) + S(p.servicios_basicos)
   ) * 12;
 
-  const ebitda = rev_total - costo_flota - costo_personal - gastos_fijos;
+  const ebitda = rev_total - costo_flota - costo_personal - gastos_fijos - costo_anciliar;
   const ebit   = ebitda - dep_anual;
 
   const deuda     = val_total_flota * S(p.deuda_pct) / 100;
@@ -351,6 +402,9 @@ function simOne(p,mixD,mixC){
     rev_total, ebitda, ebit, ebt, util_neta, eva,
     dep_anual, intereses, impuesto, nopat,
     costo_flota, costo_personal, gastos_fijos,
+    rev_flota, rev_anciliar_bruto, margen_anciliar, costo_anciliar,
+    rev_seguros, rev_extras,
+    rev_cdw, rev_sli, rev_pai, rev_gps, rev_silla, rev_conductor, rev_combustible, rev_road,
     val_total_flota, deuda,
     margen_ebitda: rev_total > 0 ? ebitda / rev_total : 0,
     margen_neto:   rev_total > 0 ? util_neta / rev_total : 0,
@@ -379,6 +433,9 @@ function runSim(params, mixD, mixC, N=3000){
   const keys = [
     "rev_total","ebitda","ebit","ebt","util_neta","eva","dep_anual","intereses","impuesto","nopat",
     "costo_flota","costo_personal","gastos_fijos","val_total_flota","deuda",
+    "rev_flota","rev_anciliar_bruto","margen_anciliar","costo_anciliar",
+    "rev_seguros","rev_extras",
+    "rev_cdw","rev_sli","rev_pai","rev_gps","rev_silla","rev_conductor","rev_combustible","rev_road",
     "margen_ebitda","margen_neto","roic","rev_por_auto","dpu","revpac","dpu_coverage",
     "costo_oportunidad","ingresos_corp_garantizados","ratio_estabilidad",
     "tarifa_c_dia_neta","tarifa_d_neta","gap_por_dia",
@@ -593,7 +650,7 @@ export default function SimuladorRentaAutos(){
   const [params,setParams]=useState(flatParams);
   const [mixDiaria,setMixDiaria]=useState(DEFAULT_MIX_DIARIA);
   const [mixCorp,setMixCorp]=useState(DEFAULT_MIX_CORP);
-  const [openSec,setOpenSec]=useState({flota:true,oae_disp:true,oae_util:true,oae_yield:true,oae_cal:true,diaria:true,corp:true});
+  const [openSec,setOpenSec]=useState({flota:true,oae_disp:true,oae_util:true,oae_yield:true,oae_cal:true,diaria:true,corp:true,anciliares:true});
   const [activeTab,setActiveTab]=useState("params");
   const [S_,setS_]=useState(null);
   const [running,setRunning]=useState(false);
@@ -751,7 +808,71 @@ export default function SimuladorRentaAutos(){
               <MixTable mix={mixCorp} setMix={handleMixC} tarifaUnit="$/mes"/>
             </Section>
 
-            {GROUPS.filter(g=>!["flota","oae_disp","oae_util","oae_yield","oae_cal"].includes(g.id)).map(g=>(
+            {/* Anciliares — tabla con precio y attach rate */}
+            <Section title="💼 Ingresos Anciliares" open={!!openSec.anciliares} onToggle={()=>toggleSec("anciliares")}>
+              <div style={{fontSize:11,color:C.muted,marginBottom:12,padding:"6px 10px",background:`${C.gold}08`,borderRadius:4,border:`1px solid ${C.gold}20`}}>
+                Revenue adicional por contrato, independiente del OAE de flota. Precio = monto cobrado por contrato diario. Attach rate = % de contratos que toman el servicio.
+              </div>
+              {/* Tabla anciliares */}
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                  <thead><tr style={{background:C.deep,color:"#fff"}}>
+                    {["Producto","Precio/contrato ($) μ","σ","Attach rate (%) μ","σ","Rev. anual estimado"].map(h=>(
+                      <th key={h} style={{padding:"7px 10px",textAlign:"left",fontFamily:mono,fontWeight:600,whiteSpace:"nowrap",fontSize:11}}>{h}</th>
+                    ))}</tr></thead>
+                  <tbody>
+                    {[
+                      ["🛡️ CDW/LDW — Colisión",         "cdw_precio",        "cdw_attach"],
+                      ["🛡️ SLI — Responsabilidad civil", "sli_precio",        "sli_attach"],
+                      ["🛡️ PAI — Protección personal",  "pai_precio",        "pai_attach"],
+                      ["📍 GPS / Navegador",              "gps_precio",        "gps_attach"],
+                      ["🪑 Silla infantil",               "silla_precio",      "silla_attach"],
+                      ["👤 Conductor adicional",          "conductor_precio",   "conductor_attach"],
+                      ["⛽ Tanque prepago",               "combustible_precio", "combustible_attach"],
+                      ["🚨 Road assistance",              "road_assist_precio", "road_assist_attach"],
+                    ].map(([label, kP, kA], i)=>{
+                      const pVal = params[kP]||GROUPS.find(g=>g.id==="anciliares").params[kP];
+                      const aVal = params[kA]||GROUPS.find(g=>g.id==="anciliares").params[kA];
+                      // Estimated annual revenue with current params (deterministic)
+                      const contratos_est = params.flota_diaria.mean * 365 * (params.ocupacion_diaria.mean/100) * 0.88 / 3.5;
+                      const rev_est = contratos_est * pVal.mean * aVal.mean / 100;
+                      const isSeg = i < 3;
+                      return(
+                        <tr key={label} style={{background:i%2===0?C.light:C.card,borderBottom:`1px solid ${C.border}`}}>
+                          <td style={{padding:"6px 10px",fontSize:12,color:C.text}}>{label}</td>
+                          <td style={{padding:"4px 6px"}}>
+                            <input type="number" value={pVal.mean} onChange={e=>handleChange(kP,"mean",parseFloat(e.target.value)||0)}
+                              style={{width:70,padding:"3px 5px",fontSize:11,fontFamily:mono,border:`1px solid ${C.border}`,borderRadius:3,background:"#fff",textAlign:"right"}}/>
+                          </td>
+                          <td style={{padding:"4px 6px"}}>
+                            <input type="number" value={pVal.std} onChange={e=>handleChange(kP,"std",parseFloat(e.target.value)||0)}
+                              style={{width:50,padding:"3px 5px",fontSize:11,fontFamily:mono,border:`1px solid ${C.border}`,borderRadius:3,background:"#fff",textAlign:"right"}}/>
+                          </td>
+                          <td style={{padding:"4px 6px"}}>
+                            <input type="number" value={aVal.mean} min={0} max={100} onChange={e=>handleChange(kA,"mean",parseFloat(e.target.value)||0)}
+                              style={{width:60,padding:"3px 5px",fontSize:11,fontFamily:mono,border:`1px solid ${C.border}`,borderRadius:3,background:"#fff",textAlign:"right"}}/>
+                          </td>
+                          <td style={{padding:"4px 6px"}}>
+                            <input type="number" value={aVal.std} onChange={e=>handleChange(kA,"std",parseFloat(e.target.value)||0)}
+                              style={{width:50,padding:"3px 5px",fontSize:11,fontFamily:mono,border:`1px solid ${C.border}`,borderRadius:3,background:"#fff",textAlign:"right"}}/>
+                          </td>
+                          <td style={{padding:"6px 10px",fontFamily:mono,fontSize:12,fontWeight:600,color:isSeg?C.teal:C.blue,textAlign:"right"}}>
+                            ${Math.round(rev_est).toLocaleString()}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {/* Márgenes */}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginTop:12}}>
+                <ParamRow k="margen_seguros" p={GROUPS.find(g=>g.id==="anciliares").params.margen_seguros} val={params.margen_seguros||{mean:78,std:5,min:30,max:95}} onChange={handleChange}/>
+                <ParamRow k="margen_extras"  p={GROUPS.find(g=>g.id==="anciliares").params.margen_extras}  val={params.margen_extras||{mean:62,std:8,min:20,max:90}}  onChange={handleChange}/>
+              </div>
+            </Section>
+
+            {GROUPS.filter(g=>!["flota","oae_disp","oae_util","oae_yield","oae_cal","anciliares"].includes(g.id)).map(g=>(
               <Section key={g.id} title={g.label} open={!!openSec[g.id]} onToggle={()=>toggleSec(g.id)}>
                 {Object.entries(g.params).map(([k,v])=>(<ParamRow key={k} k={k} p={v} val={params[k]||v} onChange={handleChange}/>))}
               </Section>
@@ -944,7 +1065,54 @@ export default function SimuladorRentaAutos(){
               ))}
             </div>
 
-            {/* P&L Statement */}
+            {/* Ingresos Anciliares Panel */}
+            <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"18px 20px",marginBottom:14,borderTop:`3px solid ${C.gold}`}}>
+              <div style={{fontSize:13,fontWeight:700,color:C.deep,marginBottom:4}}>💼 Ingresos Anciliares (P50 anual)</div>
+              <div style={{fontSize:11,color:C.muted,marginBottom:14}}>Revenue adicional por contrato — independiente del OAE de flota. Margen alto, costo bajo.</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:10,marginBottom:14}}>
+                {[
+                  ["Revenue anciliar total", S_.rev_anciliar_bruto.p50, C.gold],
+                  ["  Seguros (CDW+SLI+PAI)", S_.rev_seguros.p50, C.teal],
+                  ["  Extras & Road Assist",   S_.rev_extras.p50,   C.blue],
+                  ["Margen anciliar",          S_.margen_anciliar.p50, C.green],
+                  ["Costo anciliar",           S_.costo_anciliar.p50,  C.red],
+                ].map(([l,v,col])=>(
+                  <div key={l} style={{background:C.light,borderRadius:6,padding:"10px 12px",border:`1px solid ${C.border}`}}>
+                    <div style={{fontSize:10,color:C.muted}}>{l}</div>
+                    <div style={{fontSize:16,fontWeight:700,color:col,fontFamily:mono,marginTop:4}}>{fmt$(v)}</div>
+                  </div>
+                ))}
+              </div>
+              {/* Desglose por producto */}
+              <div style={{overflowX:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                  <thead><tr style={{background:`${C.deep}cc`,color:"#fff"}}>
+                    {["Producto","Rev. anual P50","% del total anciliar"].map(h=>(
+                      <th key={h} style={{padding:"6px 10px",textAlign:"left",fontFamily:mono,fontWeight:600}}>{h}</th>
+                    ))}</tr></thead>
+                  <tbody>
+                    {[
+                      ["🛡️ CDW/LDW",          S_.rev_cdw,          C.teal],
+                      ["🛡️ SLI",              S_.rev_sli,          C.teal],
+                      ["🛡️ PAI",              S_.rev_pai,          C.teal],
+                      ["📍 GPS",              S_.rev_gps,          C.blue],
+                      ["🪑 Silla infantil",   S_.rev_silla,        C.blue],
+                      ["👤 Conductor adic.",  S_.rev_conductor,    C.blue],
+                      ["⛽ Tanque prepago",   S_.rev_combustible,  C.blue],
+                      ["🚨 Road assistance",  S_.rev_road,         C.blue],
+                    ].map(([l,v,col],i)=>(
+                      <tr key={l} style={{background:i%2===0?C.light:C.card,borderBottom:`1px solid ${C.border}`}}>
+                        <td style={{padding:"5px 10px",color:C.text}}>{l}</td>
+                        <td style={{padding:"5px 10px",fontFamily:mono,fontWeight:600,color:col}}>{fmt$(v.p50)}</td>
+                        <td style={{padding:"5px 10px",fontFamily:mono,color:C.muted}}>
+                          {S_.rev_anciliar_bruto.p50>0?pct(v.p50/S_.rev_anciliar_bruto.p50):"—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
             <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"18px 20px",marginBottom:14}}>
               <div style={{fontSize:13,fontWeight:700,color:C.deep,marginBottom:14}}>📋 P&L Renta de Autos — Mediana Anual (P50)</div>
               {[
@@ -953,10 +1121,15 @@ export default function SimuladorRentaAutos(){
                 {l:"  (−) Brecha Utilización",              v:-S_.brecha_util.p50,                              c:C.purple, indent:true},
                 {l:"  (−) Brecha Yield",                    v:-S_.brecha_yield.p50,                             c:C.purple, indent:true},
                 {l:"  (−) Brecha Calidad",                  v:-S_.brecha_cal.p50,                               c:C.purple, indent:true},
-                {l:"= REVENUE NETO (Ve)",                   v: S_.rev_total.p50,                                b:1, c:C.deep, t:1},
+                {l:"= REVENUE FLOTA (Ve)",                  v: S_.rev_flota.p50,                                b:1, c:C.deep, t:1},
+                {l:"+ Revenue Anciliar (seguros+extras)",   v: S_.rev_anciliar_bruto.p50,                       c:C.gold},
+                {l:"    Seguros CDW+SLI+PAI",               v: S_.rev_seguros.p50,                              c:C.muted, indent:true},
+                {l:"    Extras & Road Assistance",           v: S_.rev_extras.p50,                               c:C.muted, indent:true},
+                {l:"= REVENUE TOTAL",                        v: S_.rev_total.p50,                                b:1, c:C.navy, t:1},
                 {l:"(−) Costos de Flota",                   v:-S_.costo_flota.p50,                              c:C.orange},
                 {l:"(−) Personal",                          v:-S_.costo_personal.p50,                           c:C.red},
                 {l:"(−) Gastos Fijos",                      v:-S_.gastos_fijos.p50,                             c:C.red},
+                {l:"(−) Costo Anciliar",                    v:-S_.costo_anciliar.p50,                           c:C.orange},
                 {l:"= EBITDA",                              v: S_.ebitda.p50,                                   b:1, c:S_.ebitda.p50>=0?C.green:C.red, t:1},
                 {l:"    Margen EBITDA",                     extra: pct(S_.margen_ebitda.p50),                   c:C.muted, indent:true},
                 {l:"(−) Depreciación",                      v:-S_.dep_anual.p50,                                c:C.muted},
@@ -1084,10 +1257,13 @@ export default function SimuladorRentaAutos(){
               {label:"− Brecha Utilización",      val:-S_.brecha_util.p50,   type:"oae"},
               {label:"− Brecha Yield",            val:-S_.brecha_yield.p50,  type:"oae"},
               {label:"− Brecha Calidad",          val:-S_.brecha_cal.p50,    type:"oae"},
-              {label:"= Revenue Neto (Ve)",       val: S_.rev_total.p50,     type:"total"},
-              {label:"− Costos de Flota",         val:-S_.costo_flota.p50,   type:"neg"},
-              {label:"− Personal",                val:-S_.costo_personal.p50,type:"neg"},
-              {label:"− Gastos Fijos",            val:-S_.gastos_fijos.p50,  type:"neg"},
+              {label:"= Revenue Flota (Ve)",      val: S_.rev_flota.p50,             type:"total"},
+              {label:"+ Revenue Anciliar",         val: S_.rev_anciliar_bruto.p50,    type:"pos"},
+              {label:"= Revenue Total",            val: S_.rev_total.p50,             type:"total"},
+              {label:"− Costos de Flota",          val:-S_.costo_flota.p50,           type:"neg"},
+              {label:"− Personal",                 val:-S_.costo_personal.p50,        type:"neg"},
+              {label:"− Gastos Fijos",             val:-S_.gastos_fijos.p50,          type:"neg"},
+              {label:"− Costo Anciliar",           val:-S_.costo_anciliar.p50,        type:"neg"},
               {label:"= EBITDA",                  val: S_.ebitda.p50,        type:"total"},
               {label:"− Depreciación",            val:-S_.dep_anual.p50,     type:"neg"},
               {label:"= EBIT",                    val: S_.ebit.p50,          type:"total"},
@@ -1096,8 +1272,8 @@ export default function SimuladorRentaAutos(){
               {label:"− Impuestos",               val:-S_.impuesto.p50,      type:"neg"},
               {label:"= Utilidad Neta",           val: S_.util_neta.p50,     type:"total"},
             ].map(({label,val,type})=>{
-              const isT=type==="total",isOae=type==="oae",isRef=type==="ref";
-              const col=isRef?C.navy:isT?C.deep:isOae?C.purple:C.red;
+              const isT=type==="total",isOae=type==="oae",isRef=type==="ref",isPos=type==="pos";
+              const col=isRef?C.navy:isT?C.deep:isOae?C.purple:isPos?C.gold:C.red;
               const barW=Math.min(100,Math.abs(val)/Math.max(S_.Pe.p50,1)*100);
               return(
                 <div key={label} style={{display:"flex",alignItems:"center",gap:10,marginBottom:isT?14:6,paddingTop:isT?10:0,borderTop:isT?`1px solid ${C.border}`:"none"}}>
