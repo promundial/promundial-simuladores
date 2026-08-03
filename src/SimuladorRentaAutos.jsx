@@ -181,8 +181,8 @@ function flatParams(){const p={};GROUPS.forEach(g=>Object.entries(g.params).forE
 
 // ─── Simulation core (auditada) ────────────────────────────────────
 function simOne(p,mixD,mixC){
-  const flota_d = Math.max(0, S(p.flota_diaria));
-  const flota_c = Math.max(0, S(p.flota_corp));
+  const flota_d = Math.max(0, Math.round(S(p.flota_diaria)));
+  const flota_c = Math.max(0, Math.round(S(p.flota_corp)));
   const flota_total = flota_d + flota_c || 1;
 
   // ── OAE D: Disponibilidad ──────────────────────────────────────────
@@ -539,7 +539,8 @@ function goalSeekRA({params, mixD, mixC, metric, target, conf, levers, maxIter=2
       if(dir === 1)  adj = Math.max(0, adj);   // only increase
       if(dir === -1) adj = Math.min(0, adj);   // only decrease
       const newMean = cur[k].mean * (1 + adj);
-      cur[k] = {...cur[k], mean: Math.max(cur[k].min, Math.min(cur[k].max, newMean))};
+      const rounded = (k==="flota_diaria"||k==="flota_corp") ? Math.round(newMean) : newMean;
+      cur[k] = {...cur[k], mean: Math.max(cur[k].min, Math.min(cur[k].max, rounded))};
     });
   }
   const fRes = Array.from({length:simN},()=>simOne(cur,mixD,mixC)).map(r=>r[metric]).sort((a,b)=>a-b);
@@ -731,7 +732,11 @@ export default function SimuladorRentaAutos(){
   const [gsMetric,setGsMetric]=useState("eva");
   const [gsTarget,setGsTarget]=useState(0);
   const [gsConf,setGsConf]=useState(70);
-  const [gsLevers,setGsLevers]=useState({});
+  const [gsLevers,setGsLevers]=useState(()=>{
+    const all={};
+    GROUPS.forEach(g=>Object.keys(g.params).forEach(k=>{if(LEVER_DIR[k]!==undefined)all[k]=true;}));
+    return all;
+  });
   const [gsResult,setGsResult]=useState(null);
   const [gsRunning,setGsRunning]=useState(false);
   const origParamsRef=useRef(null);
