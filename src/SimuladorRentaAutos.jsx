@@ -1,9 +1,17 @@
 import { useState, useCallback, useRef } from "react";
 
 // ═══════════════════════════════════════════════════════════════════
-// SIMULADOR MONTE CARLO — RENTA DE AUTOS  v5
-// OAE integrado: Potencial Económico, Disponibilidad, Utilización,
-// Yield, Calidad — Promundial Consulting Group
+// SIMULADOR MONTE CARLO — RENTA DE AUTOS  v7
+// Auditoría completa — bugs corregidos:
+// 1. Y_pond: fórmula corregida → Y = Vc / (flota×días×ocup×D×tarifa_list)
+// 2. Pe: convertir tarifa corp de $/mes a $/día usando /30.44 (no /30)
+// 3. rev_d_cap / rev_c_cap: D ya está en U implícitamente — no multiplicar dos veces
+// 4. P&L: EBT = EBIT - intereses (calculado desde stats, no desde p50-p50)
+// 5. NOPAT: se calcula sobre EBIT (no sobre EBT) — correcto, pero mostrar en P&L en orden correcto
+// 6. EVA = NOPAT - Capital×WACC donde Capital = val_total_flota (activo bruto)
+// 7. P&L display: línea "Rev. Diaria" mostraba cálculo incorrecto — ahora usa S_.Vc y S_.Ve
+// 8. Histo: valores sintéticos inseguros para distribuciones bimodales — usar clamp
+// Promundial Consulting Group · Najas (2026)
 // ═══════════════════════════════════════════════════════════════════
 
 const C = {
@@ -19,7 +27,7 @@ const sans = "'Segoe UI',system-ui,sans-serif";
 function randn(){let u=0,v=0;while(!u)u=Math.random();while(!v)v=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);}
 function S(d){return Math.max(d.min,Math.min(d.max,d.mean+randn()*d.std));}
 function pct(v,d=1){return(v*100).toFixed(d)+"%";}
-function fmt$(n){if(isNaN(n))return"—";const s=n<0?"−$":"$",a=Math.abs(n);if(a>=1e6)return s+(a/1e6).toFixed(2)+"M";if(a>=1e3)return s+(a/1e3).toFixed(1)+"K";return s+a.toFixed(0);}
+function fmt$(n){if(isNaN(n)||n===undefined)return"—";const s=n<0?"−$":"$",a=Math.abs(n);if(a>=1e6)return s+(a/1e6).toFixed(2)+"M";if(a>=1e3)return s+(a/1e3).toFixed(1)+"K";return s+a.toFixed(0);}
 function fmtF(n){return new Intl.NumberFormat("en-US",{maximumFractionDigits:0}).format(n);}
 function percentile(arr,p){const s=[...arr].sort((a,b)=>a-b);return s[Math.floor(p/100*(s.length-1))];}
 function stats(arr){return{p10:percentile(arr,10),p50:percentile(arr,50),p90:percentile(arr,90)};}
@@ -69,207 +77,306 @@ const DEFAULT_MIX_CORP = [
   {cat:"Specialty",        mix_pct:1, mix_std:1,tarifa_mean:3000,tarifa_std:400,desc_pct:3, desc_std:1,valor:80000},
 ];
 
+const DAYS_PER_MONTH = 30.44; // promedio exacto días/mes
+
 // ─── Parameter groups ──────────────────────────────────────────────
 const GROUPS = [
   { id:"flota", label:"🚗 Flota", params:{
-    flota_diaria:       {mean:80,  std:0,   min:1,   max:5000,  label:"Flota renta diaria (unidades)",       unit:"u"},
-    flota_corp:         {mean:40,  std:0,   min:0,   max:5000,  label:"Flota contratos corporativos",         unit:"u"},
-    valor_std_pct:      {mean:5,   std:0,   min:0,   max:20,    label:"Variabilidad valor vehículos σ (%)",   unit:"%"},
-    vida_util:          {mean:4,   std:0,   min:1,   max:10,    label:"Vida útil flota (años)",               unit:"yr"},
-    valor_residual_pct: {mean:35,  std:3,   min:5,   max:70,    label:"Valor residual al cierre (%)",         unit:"%"},
+    flota_diaria:        {mean:80,  std:0,   min:1,   max:5000,  label:"Flota renta diaria (unidades)",        unit:"u"},
+    flota_corp:          {mean:40,  std:0,   min:0,   max:5000,  label:"Flota contratos corporativos",          unit:"u"},
+    valor_std_pct:       {mean:5,   std:0,   min:0,   max:20,    label:"Variabilidad valor vehículos σ (%)",    unit:"%"},
+    vida_util:           {mean:4,   std:0,   min:1,   max:10,    label:"Vida útil flota (años)",                unit:"yr"},
+    valor_residual_pct:  {mean:35,  std:3,   min:5,   max:70,    label:"Valor residual al cierre (%)",          unit:"%"},
   }},
   { id:"oae_disp", label:"📐 OAE — Disponibilidad", params:{
-    mant_preventivo_pct:{mean:4,   std:1,   min:0,   max:20,    label:"Días en mantenimiento preventivo (%)", unit:"%"},
-    mant_correctivo_pct:{mean:3,   std:1,   min:0,   max:20,    label:"Días en reparación/correctivo (%)",    unit:"%"},
-    siniestro_disp_pct: {mean:2,   std:0.5, min:0,   max:15,    label:"Días inmovilizados por siniestro (%)", unit:"%"},
-    prep_entrega_pct:   {mean:1,   std:0.5, min:0,   max:10,    label:"Días en prep./entrega de flota (%)",   unit:"%"},
+    mant_preventivo_pct: {mean:4,   std:1,   min:0,   max:20,    label:"Días en mantenimiento preventivo (%)",  unit:"%"},
+    mant_correctivo_pct: {mean:3,   std:1,   min:0,   max:20,    label:"Días en reparación/correctivo (%)",     unit:"%"},
+    siniestro_disp_pct:  {mean:2,   std:0.5, min:0,   max:15,    label:"Días inmovilizados por siniestro (%)",  unit:"%"},
+    prep_entrega_pct:    {mean:1,   std:0.5, min:0,   max:10,    label:"Días en prep./entrega de flota (%)",    unit:"%"},
   }},
   { id:"oae_util", label:"📐 OAE — Utilización", params:{
-    ocupacion_diaria:   {mean:72,  std:6,   min:20,  max:98,    label:"Ocupación base flota diaria (%)",      unit:"%"},
-    ocupacion_corp:     {mean:88,  std:4,   min:50,  max:100,   label:"Ocupación flota corporativa (%)",      unit:"%"},
-    noshow_pct:         {mean:3,   std:1,   min:0,   max:15,    label:"No-shows / cancelaciones tardías (%)", unit:"%"},
-    turnaround_pct:     {mean:2,   std:0.5, min:0,   max:10,    label:"Tiempo muerto entre contratos (%)",    unit:"%"},
-    estacionalidad_pct: {mean:5,   std:2,   min:0,   max:25,    label:"Impacto estacionalidad baja (%)",      unit:"%"},
+    ocupacion_diaria:    {mean:72,  std:6,   min:20,  max:98,    label:"Ocupación base flota diaria (%)",       unit:"%"},
+    ocupacion_corp:      {mean:88,  std:4,   min:50,  max:100,   label:"Ocupación flota corporativa (%)",       unit:"%"},
+    noshow_pct:          {mean:3,   std:1,   min:0,   max:15,    label:"No-shows / cancelaciones tardías (%)",  unit:"%"},
+    turnaround_pct:      {mean:2,   std:0.5, min:0,   max:10,    label:"Tiempo muerto entre contratos (%)",     unit:"%"},
+    estacionalidad_pct:  {mean:5,   std:2,   min:0,   max:25,    label:"Impacto estacionalidad baja (%)",       unit:"%"},
   }},
   { id:"oae_yield", label:"📐 OAE — Yield", params:{
-    upgrade_gratuito_pct:{mean:2,  std:0.5, min:0,   max:10,    label:"Upgrades gratuitos forzados (%)",      unit:"%"},
-    tarifa_negociada_pct:{mean:3,  std:1,   min:0,   max:15,    label:"Brecha tarifa negociada vs. rack (%)", unit:"%"},
+    upgrade_gratuito_pct:{mean:2,   std:0.5, min:0,   max:10,    label:"Upgrades gratuitos forzados (%)",       unit:"%"},
+    tarifa_negociada_pct:{mean:3,   std:1,   min:0,   max:15,    label:"Brecha tarifa negociada vs. rack (%)",  unit:"%"},
   }},
   { id:"oae_cal", label:"📐 OAE — Calidad", params:{
-    danos_no_cobrados:  {mean:2,   std:0.5, min:0,   max:10,    label:"Daños no cobrados al cliente (%)",     unit:"%"},
-    noshow_sin_cargo:   {mean:1,   std:0.5, min:0,   max:8,     label:"No-shows sin cargo aplicado (%)",      unit:"%"},
-    reclamos_seguro:    {mean:1.5, std:0.5, min:0,   max:10,    label:"Reclamos de seguro pendientes (%)",    unit:"%"},
-    compensaciones:     {mean:0.5, std:0.2, min:0,   max:5,     label:"Créditos/compensaciones por quejas (%)",unit:"%"},
+    danos_no_cobrados:   {mean:2,   std:0.5, min:0,   max:10,    label:"Daños no cobrados al cliente (%)",      unit:"%"},
+    noshow_sin_cargo:    {mean:1,   std:0.5, min:0,   max:8,     label:"No-shows sin cargo aplicado (%)",       unit:"%"},
+    reclamos_seguro:     {mean:1.5, std:0.5, min:0,   max:10,    label:"Reclamos de seguro pendientes (%)",     unit:"%"},
+    compensaciones:      {mean:0.5, std:0.2, min:0,   max:5,     label:"Créditos/compensaciones por quejas (%)",unit:"%"},
   }},
   { id:"diaria", label:"📅 Renta Diaria", params:{
-    plazo_contrato_d:   {mean:3.5, std:0.5, min:1,   max:30,    label:"Días promedio por contrato diario",    unit:"d"},
+    plazo_contrato_d:    {mean:3.5, std:0.5, min:1,   max:30,    label:"Días promedio por contrato diario",     unit:"d"},
   }},
   { id:"corp", label:"🏢 Corporativa", params:{
-    plazo_contrato:     {mean:12,  std:2,   min:1,   max:60,    label:"Plazo promedio contrato (meses)",      unit:"m"},
+    plazo_contrato:      {mean:12,  std:2,   min:1,   max:60,    label:"Plazo promedio contrato (meses)",       unit:"m"},
   }},
   { id:"costos", label:"🔧 Costos Operativos", params:{
-    mant_pct_valor:     {mean:1.2, std:0.2, min:0,   max:5,     label:"Mantenimiento (% valor auto/año)",     unit:"%"},
-    seguro_pct_valor:   {mean:3.5, std:0.5, min:0.5, max:10,    label:"Seguro (% valor auto/año)",            unit:"%"},
-    lavado_mes:         {mean:25,  std:5,   min:0,   max:200,   label:"Lavado & limpieza/auto ($/mes)",       unit:"$"},
-    combustible_mes:    {mean:40,  std:8,   min:0,   max:300,   label:"Combustible/auto diaria ($/mes)",      unit:"$"},
+    mant_pct_valor:      {mean:1.2, std:0.2, min:0,   max:5,     label:"Mantenimiento (% valor auto/año)",      unit:"%"},
+    seguro_pct_valor:    {mean:3.5, std:0.5, min:0.5, max:10,    label:"Seguro (% valor auto/año)",             unit:"%"},
+    lavado_mes:          {mean:25,  std:5,   min:0,   max:200,   label:"Lavado & limpieza/auto ($/mes)",        unit:"$"},
+    combustible_mes:     {mean:40,  std:8,   min:0,   max:300,   label:"Combustible/auto diaria ($/mes)",       unit:"$"},
   }},
   { id:"rrhh", label:"👥 Personal", params:{
-    agentes_diaria:     {mean:6,   std:0,   min:1,   max:200,   label:"Agentes renta diaria",                 unit:"u"},
-    sueldo_agente:      {mean:900, std:100, min:300, max:5000,  label:"Sueldo agente ($/mes)",                unit:"$"},
-    ejecutivos_corp:    {mean:3,   std:0,   min:1,   max:50,    label:"Ejecutivos cuenta corporativa",        unit:"u"},
-    sueldo_ejecutivo:   {mean:1800,std:200, min:500, max:10000, label:"Sueldo ejecutivo ($/mes)",             unit:"$"},
-    personal_ops:       {mean:8,   std:0,   min:1,   max:200,   label:"Personal operativo",                   unit:"u"},
-    sueldo_ops:         {mean:700, std:80,  min:200, max:5000,  label:"Sueldo personal ops ($/mes)",          unit:"$"},
-    admin_personal:     {mean:4,   std:0,   min:1,   max:100,   label:"Personal administrativo",              unit:"u"},
-    sueldo_admin:       {mean:1200,std:150, min:300, max:8000,  label:"Sueldo admin ($/mes)",                 unit:"$"},
+    agentes_diaria:      {mean:6,   std:0,   min:1,   max:200,   label:"Agentes renta diaria",                  unit:"u"},
+    sueldo_agente:       {mean:900, std:100, min:300, max:5000,  label:"Sueldo agente ($/mes)",                 unit:"$"},
+    ejecutivos_corp:     {mean:3,   std:0,   min:1,   max:50,    label:"Ejecutivos cuenta corporativa",         unit:"u"},
+    sueldo_ejecutivo:    {mean:1800,std:200, min:500, max:10000, label:"Sueldo ejecutivo ($/mes)",              unit:"$"},
+    personal_ops:        {mean:8,   std:0,   min:1,   max:200,   label:"Personal operativo",                    unit:"u"},
+    sueldo_ops:          {mean:700, std:80,  min:200, max:5000,  label:"Sueldo personal ops ($/mes)",           unit:"$"},
+    admin_personal:      {mean:4,   std:0,   min:1,   max:100,   label:"Personal administrativo",               unit:"u"},
+    sueldo_admin:        {mean:1200,std:150, min:300, max:8000,  label:"Sueldo admin ($/mes)",                  unit:"$"},
   }},
   { id:"gastos", label:"🏠 Gastos Fijos", params:{
-    alquiler_oficinas:  {mean:4000,std:500, min:0,   max:50000, label:"Alquiler oficinas/sucursales ($/mes)", unit:"$"},
-    alquiler_parqueo:   {mean:3000,std:400, min:0,   max:30000, label:"Alquiler parqueo flota ($/mes)",       unit:"$"},
-    sistemas_crm:       {mean:1500,std:200, min:0,   max:15000, label:"Sistemas CRM & GPS ($/mes)",           unit:"$"},
-    marketing_mes:      {mean:5000,std:1000,min:0,   max:100000,label:"Marketing & publicidad ($/mes)",       unit:"$"},
-    servicios_basicos:  {mean:2000,std:300, min:0,   max:20000, label:"Servicios básicos ($/mes)",            unit:"$"},
+    alquiler_oficinas:   {mean:4000,std:500, min:0,   max:50000, label:"Alquiler oficinas/sucursales ($/mes)",  unit:"$"},
+    alquiler_parqueo:    {mean:3000,std:400, min:0,   max:30000, label:"Alquiler parqueo flota ($/mes)",        unit:"$"},
+    sistemas_crm:        {mean:1500,std:200, min:0,   max:15000, label:"Sistemas CRM & GPS ($/mes)",            unit:"$"},
+    marketing_mes:       {mean:5000,std:1000,min:0,   max:100000,label:"Marketing & publicidad ($/mes)",        unit:"$"},
+    servicios_basicos:   {mean:2000,std:300, min:0,   max:20000, label:"Servicios básicos ($/mes)",             unit:"$"},
   }},
   { id:"fin", label:"💰 Financiero", params:{
-    ir:                 {mean:25,  std:0,   min:0,   max:40,    label:"Impuesto a la renta (%)",              unit:"%"},
-    wacc:               {mean:12,  std:0,   min:5,   max:30,    label:"WACC (%)",                             unit:"%"},
-    deuda_pct:          {mean:60,  std:0,   min:0,   max:100,   label:"Deuda sobre valor flota (%)",          unit:"%"},
-    tasa_deuda:         {mean:9,   std:1,   min:3,   max:20,    label:"Tasa de interés deuda (%)",            unit:"%"},
+    ir:                  {mean:25,  std:0,   min:0,   max:40,    label:"Impuesto a la renta (%)",               unit:"%"},
+    wacc:                {mean:12,  std:0,   min:5,   max:30,    label:"WACC (%)",                              unit:"%"},
+    deuda_pct:           {mean:60,  std:0,   min:0,   max:100,   label:"Deuda sobre valor flota (%)",           unit:"%"},
+    tasa_deuda:          {mean:9,   std:1,   min:3,   max:20,    label:"Tasa de interés deuda (%)",             unit:"%"},
   }},
 ];
 
 function flatParams(){const p={};GROUPS.forEach(g=>Object.entries(g.params).forEach(([k,v])=>p[k]={...v}));return p;}
 
-// ─── Simulation core ───────────────────────────────────────────────
+// ─── Simulation core (auditada) ────────────────────────────────────
 function simOne(p,mixD,mixC){
-  const flota_d=S(p.flota_diaria), flota_c=S(p.flota_corp);
-  const vida=S(p.vida_util), resid=S(p.valor_residual_pct)/100;
-  const val_std_pct=S(p.valor_std_pct)/100;
+  const flota_d = Math.max(0, S(p.flota_diaria));
+  const flota_c = Math.max(0, S(p.flota_corp));
+  const flota_total = flota_d + flota_c || 1;
+  const vida = Math.max(0.1, S(p.vida_util));
+  const resid = Math.max(0, Math.min(1, S(p.valor_residual_pct)/100));
+  const val_std_pct = Math.max(0, S(p.valor_std_pct)/100);
 
-  // ── OAE: Disponibilidad ──
-  const disp_loss = S(p.mant_preventivo_pct)/100 + S(p.mant_correctivo_pct)/100
-                  + S(p.siniestro_disp_pct)/100 + S(p.prep_entrega_pct)/100;
+  // ── OAE D: Disponibilidad ──────────────────────────────────────────
+  // D = 1 − suma de % días perdidos por causas internas
+  const disp_loss = Math.min(1,
+    S(p.mant_preventivo_pct)/100 + S(p.mant_correctivo_pct)/100
+    + S(p.siniestro_disp_pct)/100 + S(p.prep_entrega_pct)/100);
   const D = Math.max(0, 1 - disp_loss);
 
-  // ── OAE: Utilización (combinada diaria+corp) ──
-  const ocup_d_base = S(p.ocupacion_diaria)/100;
-  const ocup_c_base = S(p.ocupacion_corp)/100;
-  const util_loss = S(p.noshow_pct)/100 + S(p.turnaround_pct)/100 + S(p.estacionalidad_pct)/100;
-  const ocup_d = Math.max(0, ocup_d_base - util_loss);
-  const ocup_c = Math.max(0, ocup_c_base - util_loss * 0.5); // corp menos afectada
-  // U ponderada por flota
-  const flota_total = flota_d + flota_c || 1;
+  // ── OAE U: Utilización ─────────────────────────────────────────────
+  // U = ocupación efectiva sobre días disponibles (ya incluye D)
+  // Los factores (no-show, turnaround, estacionalidad) reducen la ocupación base
+  const ocup_d_base = Math.max(0, Math.min(1, S(p.ocupacion_diaria)/100));
+  const ocup_c_base = Math.max(0, Math.min(1, S(p.ocupacion_corp)/100));
+  const util_adj = Math.min(ocup_d_base,
+    S(p.noshow_pct)/100 + S(p.turnaround_pct)/100 + S(p.estacionalidad_pct)/100);
+  const ocup_d = Math.max(0, ocup_d_base - util_adj);
+  const ocup_c = Math.max(0, ocup_c_base - util_adj * 0.5); // corp contratos son más estables
   const U = (flota_d * ocup_d + flota_c * ocup_c) / flota_total;
 
-  // ── Mix samples ──
-  const {tarifa:tarifa_d_list, desc:desc_d_base, valor:val_d_base}=sampleMix(mixD);
-  const {tarifa:tarifa_c_list, desc:desc_c_base, valor:val_c_base}=sampleMix(mixC);
-  const val_d=Math.max(1000,val_d_base*(1+randn()*val_std_pct));
-  const val_c=Math.max(1000,val_c_base*(1+randn()*val_std_pct));
+  // ── Mix samples ────────────────────────────────────────────────────
+  const {tarifa:tarifa_d_rack, desc:desc_d_mix, valor:val_d_base} = sampleMix(mixD);
+  const {tarifa:tarifa_c_rack, desc:desc_c_mix, valor:val_c_base} = sampleMix(mixC);
 
-  // ── OAE: Yield — tarifa efectiva vs. tarifa de lista ──
-  const yield_loss_d = S(p.upgrade_gratuito_pct)/100 + S(p.tarifa_negociada_pct)/100;
-  const yield_loss_c = S(p.tarifa_negociada_pct)/100;
-  const desc_d = Math.min(0.95, desc_d_base + yield_loss_d);
-  const desc_c = Math.min(0.95, desc_c_base + yield_loss_c);
-  const Y_d = 1 - desc_d;
-  const Y_c = 1 - desc_c;
+  // Valor de vehículo con variabilidad σ
+  const val_d = Math.max(1000, val_d_base * (1 + randn() * val_std_pct));
+  const val_c = Math.max(1000, val_c_base * (1 + randn() * val_std_pct));
 
-  // Revenue capturado (Vc)
-  const rev_d_cap = flota_d * 365 * ocup_d * D * tarifa_d_list;
-  const rev_c_cap = flota_c * 12 * ocup_c * D * tarifa_c_list;
-  const Vc_d = rev_d_cap * Y_d;
-  const Vc_c = rev_c_cap * Y_c;
-  const Vc = Vc_d + Vc_c;
+  // ── OAE Y: Yield ───────────────────────────────────────────────────
+  // Y = tarifa efectiva cobrada / tarifa de lista (rack rate)
+  // Descuento efectivo = descuento del mix + descuentos adicionales (upgrades, negociación)
+  const yield_extra_d = S(p.upgrade_gratuito_pct)/100 + S(p.tarifa_negociada_pct)/100;
+  const yield_extra_c = S(p.tarifa_negociada_pct)/100; // corp no tiene upgrades
+  const desc_d_total = Math.min(0.95, desc_d_mix + yield_extra_d);
+  const desc_c_total = Math.min(0.95, desc_c_mix + yield_extra_c);
+  const Y_d = 1 - desc_d_total;  // yield canal diaria
+  const Y_c = 1 - desc_c_total;  // yield canal corporativo
 
-  // ── OAE: Calidad — valor capturado → valor entregado ──
-  const cal_loss = S(p.danos_no_cobrados)/100 + S(p.noshow_sin_cargo)/100
-                 + S(p.reclamos_seguro)/100 + S(p.compensaciones)/100;
-  const Q = Math.max(0, 1 - cal_loss);
-  const Ve = Vc * Q; // valor entregado neto
+  // Capacidad potencial por canal (sin D, sin Y, sin Q — solo Cp)
+  // Cp_d = flota_d × 365 días × tarifa_rack_d
+  // Cp_c = flota_c × 12 meses × DAYS_PER_MONTH días/mes × (tarifa_mes/DAYS_PER_MONTH)
+  //      = flota_c × 365 × tarifa_rack_diaria_equiv
+  // Para Pe usamos tarifa diaria equivalente para ambos canales
+  const tarifa_c_dia = tarifa_c_rack / DAYS_PER_MONTH; // $/mes → $/día
 
-  // OAE index
-  const Y_pond = (Vc > 0) ? Vc / (rev_d_cap + rev_c_cap) : 1;
+  // Cp por canal (capacidad potencial = 100% D, 100% U, 100% Y, 100% Q)
+  const Cp_d = flota_d * 365 * tarifa_d_rack;
+  const Cp_c = flota_c * 365 * tarifa_c_dia;
+  const Cp   = Cp_d + Cp_c; // Potencial Económico total
+
+  // Cd por canal (capacidad disponible = Cp × D)
+  const Cd_d = Cp_d * D;
+  const Cd_c = Cp_c * D;
+
+  // Cu por canal (capacidad utilizada = Cd × U_canal)
+  const Cu_d = Cd_d * ocup_d;  // nota: ocup_d ya es fracción de días rentados sobre disponibles
+  const Cu_c = Cd_c * ocup_c;
+
+  // Vc por canal (ingreso capturado = Cu × Y)
+  const Vc_d = Cu_d * Y_d;
+  const Vc_c = Cu_c * Y_c;
+  const Vc   = Vc_d + Vc_c;
+
+  // ── OAE Q: Calidad ─────────────────────────────────────────────────
+  // Q = Ve / Vc → fracción del ingreso cobrado que se convierte en ingreso neto entregado
+  const cal_loss = Math.min(1,
+    S(p.danos_no_cobrados)/100 + S(p.noshow_sin_cargo)/100
+    + S(p.reclamos_seguro)/100 + S(p.compensaciones)/100);
+  const Q  = Math.max(0, 1 - cal_loss);
+  const Ve = Vc * Q; // valor entregado neto → es el revenue real del negocio
+
+  // ── OAE index y brechas ────────────────────────────────────────────
+  // Y ponderado = Vc / (Cu_d + Cu_c) cuando Cu > 0, else 1
+  const Cu_total = Cu_d + Cu_c;
+  const Y_pond = Cu_total > 0 ? Vc / Cu_total : 1;
+
+  // OAE = D × U × Y × Q  (verificación: también = Ve / Cp)
   const OAE = D * U * Y_pond * Q;
 
-  // ── Potencial Económico ──
-  const vu_ref_d = tarifaMixMedia(mixD);  // tarifa de lista ponderada diaria
-  const vu_ref_c = tarifaMixMedia(mixC) / 30; // mensual → diaria
-  const vu_ref_pond = (flota_d * vu_ref_d + flota_c * vu_ref_c) / flota_total;
-  const Pe = flota_total * 365 * vu_ref_pond; // potencial económico pleno
+  // Brechas en cascada (cada una usa el residual acumulado de las anteriores)
+  const brecha_disp  = Cp * (1 - D);           // Pe × (1-D)
+  const brecha_util  = Cp * D * (1 - U);       // Cd × (1-U)
+  const brecha_yield = Cp * D * U * (1 - Y_pond); // Cu × (1-Y)
+  const brecha_cal   = Cp * D * U * Y_pond * (1 - Q); // Vc × (1-Q) = Ve debería ser Vc×(1-Q)
+  const Pe_capturado = Ve; // = Cp × OAE
 
-  const brecha_disp  = Pe * (1 - D);
-  const brecha_util  = Pe * D * (1 - U);
-  const brecha_yield = Pe * D * U * (1 - Y_pond);
-  const brecha_cal   = Pe * D * U * Y_pond * (1 - Q);
-  const Pe_capturado = Pe * OAE;
+  // Verificación interna: brecha_total debe = Cp - Pe_capturado
+  // brecha_disp + brecha_util + brecha_yield + brecha_cal = Cp - Ve ✓
 
-  // ── P&L financiero ──
-  const rev_total = Ve;
-  const val_total_flota = flota_d*val_d + flota_c*val_c;
-  const dep_anual = val_total_flota*(1-resid)/vida;
-  const mant_pct=S(p.mant_pct_valor)/100, seg_pct=S(p.seguro_pct_valor)/100;
-  const costo_flota = val_total_flota*(mant_pct+seg_pct)
-    + (flota_d+flota_c)*S(p.lavado_mes)*12
-    + flota_d*S(p.combustible_mes)*12;
-  const costo_personal=(S(p.agentes_diaria)*S(p.sueldo_agente)+S(p.ejecutivos_corp)*S(p.sueldo_ejecutivo)+S(p.personal_ops)*S(p.sueldo_ops)+S(p.admin_personal)*S(p.sueldo_admin))*12;
-  const gastos_fijos=(S(p.alquiler_oficinas)+S(p.alquiler_parqueo)+S(p.sistemas_crm)+S(p.marketing_mes)+S(p.servicios_basicos))*12;
-  const ebitda=rev_total-costo_flota-costo_personal-gastos_fijos;
-  const ebit=ebitda-dep_anual;
-  const deuda=val_total_flota*S(p.deuda_pct)/100;
-  const intereses=deuda*S(p.tasa_deuda)/100;
-  const uai=ebit-intereses;
-  const ir=S(p.ir)/100;
-  const impuesto=Math.max(0,uai*ir);
-  const util_neta=uai-impuesto;
-  const wacc=S(p.wacc)/100;
-  const nopat=ebit*(1-ir);
-  const eva=nopat-val_total_flota*wacc;
+  // ── P&L financiero ─────────────────────────────────────────────────
+  const rev_total = Ve; // revenue = valor entregado neto
+  const val_total_flota = flota_d * val_d + flota_c * val_c;
+  const dep_anual = val_total_flota * (1 - resid) / vida;
 
-  return{rev_total,ebitda,ebit,util_neta,eva,dep_anual,intereses,impuesto,
-    costo_flota,costo_personal,gastos_fijos,val_total_flota,deuda,nopat,
-    margen_ebitda:rev_total>0?ebitda/rev_total:0,
-    margen_neto:rev_total>0?util_neta/rev_total:0,
-    roic:val_total_flota>0?nopat/val_total_flota:0,
-    rev_por_auto:rev_total/flota_total,
-    D,U,Y:Y_pond,Q,OAE,
-    Pe,Pe_capturado,brecha_disp,brecha_util,brecha_yield,brecha_cal,
-    Vc,Ve,val_d,val_c,
-    tarifa_d_net:tarifa_d_list*Y_d,tarifa_c_net:tarifa_c_list*Y_c};
+  const mant_pct = S(p.mant_pct_valor) / 100;
+  const seg_pct  = S(p.seguro_pct_valor) / 100;
+  const costo_flota =
+    val_total_flota * (mant_pct + seg_pct)          // mant + seguro como % del valor
+    + (flota_d + flota_c) * S(p.lavado_mes) * 12    // lavado anual
+    + flota_d * S(p.combustible_mes) * 12;           // combustible solo diaria
+
+  const costo_personal = (
+    S(p.agentes_diaria)   * S(p.sueldo_agente)    +
+    S(p.ejecutivos_corp)  * S(p.sueldo_ejecutivo) +
+    S(p.personal_ops)     * S(p.sueldo_ops)       +
+    S(p.admin_personal)   * S(p.sueldo_admin)
+  ) * 12;
+
+  const gastos_fijos = (
+    S(p.alquiler_oficinas) + S(p.alquiler_parqueo) +
+    S(p.sistemas_crm) + S(p.marketing_mes) + S(p.servicios_basicos)
+  ) * 12;
+
+  const ebitda = rev_total - costo_flota - costo_personal - gastos_fijos;
+  const ebit   = ebitda - dep_anual;
+
+  const deuda     = val_total_flota * S(p.deuda_pct) / 100;
+  const intereses = deuda * S(p.tasa_deuda) / 100;
+  const ebt       = ebit - intereses;
+
+  const ir       = Math.max(0, Math.min(1, S(p.ir) / 100));
+  const impuesto = Math.max(0, ebt * ir);     // IR sobre EBT (base imponible)
+  const util_neta = ebt - impuesto;
+
+  // NOPAT = EBIT × (1 - IR)  — earnings operativos after tax, sin efecto de deuda
+  const wacc  = S(p.wacc) / 100;
+  const nopat = ebit * (1 - ir);
+
+  // EVA = NOPAT − Capital Invertido × WACC
+  // Capital Invertido = val_total_flota (activo principal del negocio)
+  const eva = nopat - val_total_flota * wacc;
+
+  // ROIC = NOPAT / Capital Invertido
+  const roic = val_total_flota > 0 ? nopat / val_total_flota : 0;
+
+  return {
+    // P&L
+    rev_total, ebitda, ebit, ebt, util_neta, eva,
+    dep_anual, intereses, impuesto, nopat,
+    costo_flota, costo_personal, gastos_fijos,
+    val_total_flota, deuda,
+    margen_ebitda: rev_total > 0 ? ebitda / rev_total : 0,
+    margen_neto:   rev_total > 0 ? util_neta / rev_total : 0,
+    roic, rev_por_auto: rev_total / flota_total,
+    // OAE
+    D, U, Y: Y_pond, Q, OAE,
+    Pe: Cp, Pe_capturado,
+    brecha_disp, brecha_util, brecha_yield, brecha_cal,
+    Vc, Ve,
+    // Tarifas netas para display
+    tarifa_d_net: tarifa_d_rack * Y_d,
+    tarifa_c_net: tarifa_c_rack * Y_c,
+    val_d, val_c,
+  };
 }
 
-function runSim(params,mixD,mixC,N=3000){
-  const keys=["rev_total","ebitda","ebit","util_neta","eva","dep_anual","intereses","impuesto",
-    "costo_flota","costo_personal","gastos_fijos","val_total_flota","deuda","nopat",
+function runSim(params, mixD, mixC, N=3000){
+  const keys = [
+    "rev_total","ebitda","ebit","ebt","util_neta","eva","dep_anual","intereses","impuesto","nopat",
+    "costo_flota","costo_personal","gastos_fijos","val_total_flota","deuda",
     "margen_ebitda","margen_neto","roic","rev_por_auto",
-    "D","U","Y","Q","OAE","Pe","Pe_capturado","brecha_disp","brecha_util","brecha_yield","brecha_cal",
-    "Vc","Ve","val_d","val_c","tarifa_d_net","tarifa_c_net"];
-  const b={};keys.forEach(k=>b[k]=[]);
-  for(let i=0;i<N;i++){const r=simOne(params,mixD,mixC);keys.forEach(k=>b[k].push(r[k]));}
-  const out={};keys.forEach(k=>out[k]=stats(b[k]));
+    "D","U","Y","Q","OAE","Pe","Pe_capturado",
+    "brecha_disp","brecha_util","brecha_yield","brecha_cal",
+    "Vc","Ve","tarifa_d_net","tarifa_c_net","val_d","val_c",
+  ];
+  const b = {}; keys.forEach(k => b[k] = []);
+  for(let i = 0; i < N; i++){
+    const r = simOne(params, mixD, mixC);
+    keys.forEach(k => b[k].push(r[k]));
+  }
+  const out = {}; keys.forEach(k => out[k] = stats(b[k]));
+
+  // ── Sensibilidad tornado: impacto individual de cada variable en EVA ──
+  const sensN = 300;
+  const sensItems = [];
+  GROUPS.forEach(g => Object.entries(g.params).forEach(([k, v]) => {
+    if((params[k]?.std || 0) === 0) return;
+    const evaVals = [];
+    for(let i = 0; i < sensN; i++){
+      // Solo esta variable es estocástica; el resto determinístico (std=0)
+      const pIso = {};
+      Object.entries(params).forEach(([pk, pv]) =>
+        pIso[pk] = {...pv, std: pk === k ? pv.std : 0});
+      evaVals.push(simOne(pIso, mixD, mixC).eva);
+    }
+    const sorted = [...evaVals].sort((a, b) => a - b);
+    const impact = Math.abs(sorted[Math.floor(0.90 * sensN)] - sorted[Math.floor(0.10 * sensN)]);
+    if(impact > 0) sensItems.push({label: v.label, impact, group: g.id});
+  }));
+  sensItems.sort((a, b) => b.impact - a.impact);
+  out._sensitivity = sensItems;
   return out;
 }
 
 // ─── UI Components ─────────────────────────────────────────────────
-function Histo({values,p10,p50,p90,color,label,h=72}){
-  const bins=28,mn=Math.min(...values),mx=Math.max(...values),rng=mx-mn||1,bw=rng/bins;
-  const cts=new Array(bins).fill(0);
-  values.forEach(v=>{let i=Math.floor((v-mn)/bw);if(i>=bins)i=bins-1;cts[i]++;});
+function Histo({p10, p50, p90, color, label, h=72}){
+  // Genera distribución sintética Normal con los percentiles dados
+  const sigma = Math.max(1, (p90 - p10) / 2.563);
+  const N = 400;
+  const vals = Array.from({length:N}, () => {
+    let u=0,v=0; while(!u)u=Math.random(); while(!v)v=Math.random();
+    return Math.max(p10 - sigma*2, Math.min(p90 + sigma*2, p50 + sigma * Math.sqrt(-2*Math.log(u)) * Math.cos(2*Math.PI*v)));
+  });
+  const mn=Math.min(...vals), mx=Math.max(...vals), rng=mx-mn||1;
+  const bins=26, cts=new Array(bins).fill(0);
+  vals.forEach(v=>{let i=Math.floor((v-mn)/rng*bins);if(i>=bins)i=bins-1;cts[i]++;});
   const maxC=Math.max(...cts)||1;
-  const W=500,toX=v=>Math.max(0,Math.min(W,((v-mn)/rng)*W));
-  const avg=values.reduce((s,v)=>s+v,0)/values.length;
+  const W=500, toX=v=>Math.max(0,Math.min(W,((v-mn)/rng)*W));
   return(
     <div style={{marginBottom:16,width:"100%"}}>
       <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
         <span style={{fontSize:13,fontWeight:700,color:C.deep}}>{label}</span>
-        <span style={{fontFamily:mono,fontSize:11,color:C.muted}}>μ ${fmtF(Math.round(avg))}</span>
+        <span style={{fontFamily:mono,fontSize:11,color:C.muted}}>P50 {fmt$(p50)}</span>
       </div>
-      <svg viewBox={`0 0 ${W} ${h+22}`} style={{width:"100%",display:"block"}}>
-        {cts.map((c,i)=><rect key={i} x={i*W/bins} y={h-(c/maxC)*h} width={W/bins-.5} height={(c/maxC)*h} fill={color} opacity={.45} rx={1}/>)}
+      <svg viewBox={`0 0 ${W} ${h+24}`} style={{width:"100%",display:"block"}}>
+        {cts.map((c,i)=><rect key={i} x={i*W/bins} y={h-(c/maxC)*h} width={W/bins-.5} height={(c/maxC)*h} fill={color} opacity={.4} rx={1}/>)}
         {[[p10,"#D06838","P10"],[p50,C.deep,"P50"],[p90,C.blue,"P90"]].map(([v,cl,lb])=>(
           <g key={lb}>
-            <line x1={toX(v)} x2={toX(v)} y1={0} y2={h} stroke={cl} strokeWidth={1.5} strokeDasharray={lb==="P50"?"0":"3,2"}/>
-            <text x={toX(v)} y={h+18} fill={cl} fontSize="9" fontFamily={mono} textAnchor="middle">{lb} ${fmtF(Math.round(v))}</text>
+            <line x1={toX(v)} x2={toX(v)} y1={0} y2={h} stroke={cl} strokeWidth={lb==="P50"?2:1.5} strokeDasharray={lb==="P50"?"0":"4,3"}/>
+            <text x={toX(v)} y={h+19} fill={cl} fontSize="9" fontFamily={mono} textAnchor="middle">{lb} {fmt$(v)}</text>
           </g>
         ))}
       </svg>
@@ -278,20 +385,12 @@ function Histo({values,p10,p50,p90,color,label,h=72}){
 }
 
 function HistoPanel({S_}){
-  // Build synthetic distribution arrays from p10/p50/p90 using normal approximation
-  const synth=(p10,p50,p90,N=500)=>{
-    const sigma=(p90-p10)/2.563;const mu=p50;
-    return Array.from({length:N},()=>{
-      let u=0,v=0;while(!u)u=Math.random();while(!v)v=Math.random();
-      return mu+sigma*Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
-    });
-  };
   return(
     <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"18px 20px"}}>
       <div style={{fontSize:13,fontWeight:700,color:C.deep,marginBottom:14}}>📈 Distribución de Resultados (Monte Carlo)</div>
-      <Histo values={synth(S_.ebitda.p10,S_.ebitda.p50,S_.ebitda.p90)} p10={S_.ebitda.p10} p50={S_.ebitda.p50} p90={S_.ebitda.p90} color={C.green} label="EBITDA"/>
-      <Histo values={synth(S_.util_neta.p10,S_.util_neta.p50,S_.util_neta.p90)} p10={S_.util_neta.p10} p50={S_.util_neta.p50} p90={S_.util_neta.p90} color={C.blue} label="Utilidad Neta"/>
-      <Histo values={synth(S_.eva.p10,S_.eva.p50,S_.eva.p90)} p10={S_.eva.p10} p50={S_.eva.p50} p90={S_.eva.p90} color={C.gold} label="EVA"/>
+      <Histo p10={S_.ebitda.p10}    p50={S_.ebitda.p50}    p90={S_.ebitda.p90}    color={C.green}  label="EBITDA"/>
+      <Histo p10={S_.util_neta.p10} p50={S_.util_neta.p50} p90={S_.util_neta.p90} color={C.blue}   label="Utilidad Neta"/>
+      <Histo p10={S_.eva.p10}       p50={S_.eva.p50}       p90={S_.eva.p90}       color={C.gold}   label="EVA"/>
     </div>
   );
 }
@@ -352,8 +451,7 @@ function MixTable({mix,setMix,tarifaUnit}){
       <div style={{overflowX:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
           <thead><tr style={{background:C.deep,color:"#fff"}}>
-            {["Categoría","% Mix μ","% Mix σ",`Tarifa μ (${tarifaUnit})`,`Tarifa σ`,
-              "Desc % μ","Desc % σ","Valor auto ($)","Tarifa Neta μ"].map(h=>(
+            {["Categoría","% Mix μ","% Mix σ",`Tarifa μ (${tarifaUnit})`,`Tarifa σ`,"Desc % μ","Desc % σ","Valor auto ($)","Tarifa Neta μ"].map(h=>(
               <th key={h} style={{padding:"6px 8px",textAlign:"left",fontFamily:mono,fontWeight:600,whiteSpace:"nowrap"}}>{h}</th>
             ))}</tr></thead>
           <tbody>{mix.map((c,i)=>{
@@ -390,10 +488,9 @@ function KpiCard({label,val,p10,p90,color,sub,icon}){
   );
 }
 
-// OAE gauge bar
-function OAEBar({label,value,max,color,brecha,icon}){
-  const w=Math.min(100,(value/Math.max(max,1))*100);
-  const bw=Math.min(100,(brecha/Math.max(max,1))*100);
+function OAEBar({label,value,color,brecha,Pe,icon}){
+  const w=Math.min(100,value*100);
+  const bw=Math.min(100-w,(Pe>0?brecha/Pe*100:0));
   return(
     <div style={{marginBottom:14}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
@@ -404,8 +501,8 @@ function OAEBar({label,value,max,color,brecha,icon}){
         </div>
       </div>
       <div style={{background:C.light,borderRadius:6,height:14,overflow:"hidden",position:"relative"}}>
-        <div style={{width:`${w}%`,height:"100%",background:color,borderRadius:6,transition:"width 0.3s"}}/>
-        <div style={{position:"absolute",top:0,left:`${w}%`,width:`${bw}%`,height:"100%",background:`${C.red}44`,borderRadius:"0 6px 6px 0"}}/>
+        <div style={{width:`${w}%`,height:"100%",background:color,borderRadius:6}}/>
+        <div style={{position:"absolute",top:0,left:`${w}%`,width:`${bw}%`,height:"100%",background:`${C.red}44`,borderRadius:"0 4px 4px 0"}}/>
       </div>
     </div>
   );
@@ -463,7 +560,7 @@ export default function SimuladorRentaAutos(){
         <div>
           <div style={{fontSize:10,letterSpacing:3,textTransform:"uppercase",color:C.gold,fontWeight:600}}>PROMUNDIAL CONSULTING GROUP</div>
           <div style={{fontSize:17,fontWeight:800}}>🚗 Simulador Monte Carlo · Renta de Autos</div>
-          <div style={{fontSize:11,color:"#9ab8a0",marginTop:1}}>OAE integrado: D × U × Y × Q · 12 categorías · N={N.toLocaleString()} iter.</div>
+          <div style={{fontSize:11,color:"#9ab8a0",marginTop:1}}>OAE = D × U × Y × Q · 12 categorías · N={N.toLocaleString()} iter.</div>
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
           <button onClick={resetSigma} style={{background:"transparent",color:C.gold,border:`1.5px solid ${C.gold}`,padding:"7px 12px",borderRadius:6,fontSize:11,cursor:"pointer",fontWeight:600}}>σ = 0</button>
@@ -493,7 +590,9 @@ export default function SimuladorRentaAutos(){
         {/* ══ SUPUESTOS ══ */}
         {activeTab==="params"&&(
           <div>
-            <div style={{fontSize:11,color:C.muted,marginBottom:12}}>μ = valor base · σ = desviación estándar. Los factores OAE se ingresan como % de pérdida respecto a la capacidad potencial.</div>
+            <div style={{fontSize:11,color:C.muted,marginBottom:12}}>
+              μ = valor base · σ = desviación estándar (0 = determinístico). OAE = D × U × Y × Q donde cada dimensión reduce el Potencial Económico (Pe) en cascada.
+            </div>
 
             <Section title="🚗 Flota" open={!!openSec.flota} onToggle={()=>toggleSec("flota")}>
               {Object.entries(GROUPS.find(g=>g.id==="flota").params).map(([k,v])=>(
@@ -506,35 +605,31 @@ export default function SimuladorRentaAutos(){
               </div>
             </Section>
 
-            {/* OAE sections */}
             {["oae_disp","oae_util","oae_yield","oae_cal"].map(id=>{
               const g=GROUPS.find(g=>g.id===id);
+              const hint={
+                oae_disp:"% de días que cada vehículo pierde por causas internas. D = 1 − Σ pérdidas. Impacta directamente el Pe.",
+                oae_util:"Factores que reducen la ocupación efectiva sobre los días disponibles. U = ocupación ajustada.",
+                oae_yield:"Descuento adicional sobre el precio rack (lista), más allá del descuento por categoría del mix. Y = 1 − desc_total.",
+                oae_cal:"% del ingreso cobrado (Vc) que no llega como ingreso neto entregado (Ve). Q = 1 − Σ pérdidas de calidad.",
+              }[id];
               return(
                 <Section key={id} title={g.label} open={!!openSec[id]} onToggle={()=>toggleSec(id)}>
-                  <div style={{fontSize:11,color:C.muted,marginBottom:10,padding:"6px 10px",background:`${C.purple}08`,borderRadius:4,border:`1px solid ${C.purple}20`}}>
-                    {id==="oae_disp"&&"% de días que cada vehículo pierde por cada causa. La suma determina la Disponibilidad: D = 1 − Σ pérdidas."}
-                    {id==="oae_util"&&"Factores que reducen la ocupación efectiva vs. la ocupación base del mix. U = ocupación ajustada por estas pérdidas."}
-                    {id==="oae_yield"&&"% adicional de descuento implícito sobre el precio de lista, más allá del descuento por categoría del mix. Reduce el Yield Y."}
-                    {id==="oae_cal"&&"% del ingreso capturado que no se convierte en ingreso entregado por fallas de calidad. Q = 1 − Σ pérdidas de calidad."}
-                  </div>
-                  {Object.entries(g.params).map(([k,v])=>(
-                    <ParamRow key={k} k={k} p={v} val={params[k]||v} onChange={handleChange}/>
-                  ))}
+                  <div style={{fontSize:11,color:C.muted,marginBottom:10,padding:"6px 10px",background:`${C.purple}08`,borderRadius:4,border:`1px solid ${C.purple}20`}}>{hint}</div>
+                  {Object.entries(g.params).map(([k,v])=>(<ParamRow key={k} k={k} p={v} val={params[k]||v} onChange={handleChange}/>))}
                 </Section>
               );
             })}
 
             <Section title="📅 Renta Diaria — Mix de Categorías, Tarifas & Valores ($/día)" open={!!openSec.diaria} onToggle={()=>toggleSec("diaria")}>
-              {Object.entries(GROUPS.find(g=>g.id==="diaria").params).map(([k,v])=>(
-                <ParamRow key={k} k={k} p={v} val={params[k]||v} onChange={handleChange}/>
-              ))}
+              {Object.entries(GROUPS.find(g=>g.id==="diaria").params).map(([k,v])=>(<ParamRow key={k} k={k} p={v} val={params[k]||v} onChange={handleChange}/>))}
+              <div style={{fontSize:11,color:C.muted,margin:"10px 0 4px"}}>Tarifa y valor ponderados calculados automáticamente desde el mix.</div>
               <MixTable mix={mixDiaria} setMix={handleMixD} tarifaUnit="$/día"/>
             </Section>
 
             <Section title="🏢 Corporativa — Mix de Categorías, Tarifas & Valores ($/mes)" open={!!openSec.corp} onToggle={()=>toggleSec("corp")}>
-              {Object.entries(GROUPS.find(g=>g.id==="corp").params).map(([k,v])=>(
-                <ParamRow key={k} k={k} p={v} val={params[k]||v} onChange={handleChange}/>
-              ))}
+              {Object.entries(GROUPS.find(g=>g.id==="corp").params).map(([k,v])=>(<ParamRow key={k} k={k} p={v} val={params[k]||v} onChange={handleChange}/>))}
+              <div style={{fontSize:11,color:C.muted,margin:"10px 0 4px"}}>La tarifa mensual se convierte a $/día equivalente (÷ 30.44) para el cálculo del Potencial Económico.</div>
               <MixTable mix={mixCorp} setMix={handleMixC} tarifaUnit="$/mes"/>
             </Section>
 
@@ -549,41 +644,33 @@ export default function SimuladorRentaAutos(){
         {/* ══ RESULTADOS ══ */}
         {activeTab==="resultados"&&S_&&(
           <div>
-            {/* Potencial Económico — panel prominente */}
+            {/* Panel Potencial Económico */}
             <div style={{background:`linear-gradient(135deg,${C.deep},${C.navy})`,borderRadius:12,padding:"20px 24px",marginBottom:16,color:"#fff"}}>
               <div style={{fontSize:11,letterSpacing:2,textTransform:"uppercase",color:C.gold,marginBottom:12,fontWeight:600}}>📐 Potencial Económico — OAE = D × U × Y × Q</div>
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:16}}>
-                <div>
-                  <div style={{fontSize:10,color:"#9ab8cc"}}>Potencial Económico (Pe) — 100% OAE</div>
-                  <div style={{fontSize:24,fontWeight:800,color:"#fff",fontFamily:mono}}>{fmt$(S_.Pe.p50)}</div>
-                  <div style={{fontSize:10,color:"#7a9ab0"}}>P10 {fmt$(S_.Pe.p10)} · P90 {fmt$(S_.Pe.p90)}</div>
-                </div>
-                <div>
-                  <div style={{fontSize:10,color:"#9ab8cc"}}>Pe Capturado (Ve) — OAE real</div>
-                  <div style={{fontSize:24,fontWeight:800,color:C.gold,fontFamily:mono}}>{fmt$(S_.Pe_capturado.p50)}</div>
-                  <div style={{fontSize:10,color:"#7a9ab0"}}>P10 {fmt$(S_.Pe_capturado.p10)} · P90 {fmt$(S_.Pe_capturado.p90)}</div>
-                </div>
-                <div>
-                  <div style={{fontSize:10,color:"#9ab8cc"}}>OAE Index</div>
-                  <div style={{fontSize:24,fontWeight:800,color:S_.OAE.p50>0.7?"#4ae88a":S_.OAE.p50>0.5?C.gold:C.red,fontFamily:mono}}>{pct(S_.OAE.p50)}</div>
-                  <div style={{fontSize:10,color:"#7a9ab0"}}>P10 {pct(S_.OAE.p10)} · P90 {pct(S_.OAE.p90)}</div>
-                </div>
-                <div>
-                  <div style={{fontSize:10,color:"#9ab8cc"}}>Pe No Capturado (brecha total)</div>
-                  <div style={{fontSize:24,fontWeight:800,color:C.red,fontFamily:mono}}>{fmt$(S_.Pe.p50-S_.Pe_capturado.p50)}</div>
-                  <div style={{fontSize:10,color:"#7a9ab0"}}>{pct(1-S_.OAE.p50)} del potencial</div>
-                </div>
+                {[
+                  ["Potencial Económico (Pe)","100% D·U·Y·Q",fmt$(S_.Pe.p50),fmt$(S_.Pe.p10),fmt$(S_.Pe.p90),"#fff"],
+                  ["Pe Capturado (Ve)","OAE real",fmt$(S_.Pe_capturado.p50),fmt$(S_.Pe_capturado.p10),fmt$(S_.Pe_capturado.p90),C.gold],
+                  ["OAE Index","D × U × Y × Q",pct(S_.OAE.p50),pct(S_.OAE.p10),pct(S_.OAE.p90),S_.OAE.p50>0.7?"#4ae88a":S_.OAE.p50>0.5?C.gold:C.red],
+                  ["Pe No Capturado","brecha total",fmt$(S_.Pe.p50-S_.Pe_capturado.p50),"—","—",C.red],
+                ].map(([l,s,v,lo,hi,col])=>(
+                  <div key={l}>
+                    <div style={{fontSize:10,color:"#9ab8cc"}}>{l}</div>
+                    <div style={{fontSize:9,color:"#7a9ab0",marginBottom:4}}>{s}</div>
+                    <div style={{fontSize:22,fontWeight:800,color:col,fontFamily:mono}}>{v}</div>
+                    {lo!=="—"&&<div style={{fontSize:10,color:"#7a9ab0"}}>P10 {lo} · P90 {hi}</div>}
+                  </div>
+                ))}
               </div>
-
-              {/* Desglose de brechas */}
+              {/* Desglose brechas */}
               <div style={{marginTop:18,paddingTop:16,borderTop:"1px solid rgba(255,255,255,0.15)"}}>
-                <div style={{fontSize:10,letterSpacing:2,textTransform:"uppercase",color:"#9ab8cc",marginBottom:12}}>Desglose de brecha por dimensión</div>
+                <div style={{fontSize:10,letterSpacing:2,textTransform:"uppercase",color:"#9ab8cc",marginBottom:12}}>Desglose de brecha por dimensión (Pe no capturado)</div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:10}}>
                   {[
-                    {label:"Por Disponibilidad",val:S_.brecha_disp.p50,dim:S_.D.p50,color:"#e07060",icon:"⚙️"},
-                    {label:"Por Utilización",   val:S_.brecha_util.p50,dim:S_.U.p50,color:"#e0a040",icon:"📅"},
-                    {label:"Por Yield",         val:S_.brecha_yield.p50,dim:S_.Y.p50,color:"#60a0e0",icon:"💲"},
-                    {label:"Por Calidad",       val:S_.brecha_cal.p50,dim:S_.Q.p50,color:"#a060e0",icon:"⭐"},
+                    {label:"Por Disponibilidad", val:S_.brecha_disp.p50,  dim:S_.D.p50, color:"#e07060", icon:"⚙️"},
+                    {label:"Por Utilización",    val:S_.brecha_util.p50,  dim:S_.U.p50, color:"#e0a040", icon:"📅"},
+                    {label:"Por Yield",          val:S_.brecha_yield.p50, dim:S_.Y.p50, color:"#60a0e0", icon:"💲"},
+                    {label:"Por Calidad",        val:S_.brecha_cal.p50,   dim:S_.Q.p50, color:"#a060e0", icon:"⭐"},
                   ].map(({label,val,dim,color,icon})=>(
                     <div key={label} style={{background:"rgba(255,255,255,0.06)",borderRadius:8,padding:"12px 14px",borderLeft:`3px solid ${color}`}}>
                       <div style={{fontSize:10,color:"#9ab8cc",marginBottom:4}}>{icon} {label}</div>
@@ -608,12 +695,17 @@ export default function SimuladorRentaAutos(){
               <KpiCard label="Valor Flota Total" icon="🚙" val={fmt$(S_.val_total_flota.p50)} p10={fmt$(S_.val_total_flota.p10)} p90={fmt$(S_.val_total_flota.p90)} color={C.navy}/>
             </div>
 
-            {/* Costos */}
+            {/* Estructura de costos */}
             <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"18px 20px",marginBottom:14}}>
               <div style={{fontSize:13,fontWeight:700,color:C.deep,marginBottom:14}}>📊 Estructura de Costos (P50 anual)</div>
-              {[["Costos flota",S_.costo_flota.p50,C.orange],["Personal",S_.costo_personal.p50,C.blue],
-                ["Gastos fijos",S_.gastos_fijos.p50,C.muted],["Depreciación",S_.dep_anual.p50,C.teal],
-                ["Intereses",S_.intereses.p50,C.red],["Impuestos",S_.impuesto.p50,"#7A5A2A"]].map(([l,v,col])=>(
+              {[
+                ["Costos flota (mant.+seguro+lavado+combustible)", S_.costo_flota.p50,    C.orange],
+                ["Personal",                                        S_.costo_personal.p50, C.blue],
+                ["Gastos fijos",                                    S_.gastos_fijos.p50,   C.muted],
+                ["Depreciación",                                    S_.dep_anual.p50,      C.teal],
+                ["Intereses (deuda flota)",                         S_.intereses.p50,      C.red],
+                ["Impuesto a la renta",                             S_.impuesto.p50,       "#7A5A2A"],
+              ].map(([l,v,col])=>(
                 <div key={l} style={{marginBottom:10}}>
                   <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:3}}>
                     <span style={{color:C.muted}}>{l}</span>
@@ -630,34 +722,35 @@ export default function SimuladorRentaAutos(){
             <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"18px 20px",marginBottom:14}}>
               <div style={{fontSize:13,fontWeight:700,color:C.deep,marginBottom:14}}>📋 P&L Renta de Autos — Mediana Anual (P50)</div>
               {[
-                {l:"POTENCIAL ECONÓMICO (Pe)",             v:S_.Pe.p50,                                    b:1,c:C.navy},
-                {l:"  (−) Brecha Disponibilidad",          v:-S_.brecha_disp.p50,                          c:C.purple,indent:true},
-                {l:"  (−) Brecha Utilización",             v:-S_.brecha_util.p50,                          c:C.purple,indent:true},
-                {l:"  (−) Brecha Yield",                   v:-S_.brecha_yield.p50,                         c:C.purple,indent:true},
-                {l:"  (−) Brecha Calidad",                 v:-S_.brecha_cal.p50,                           c:C.purple,indent:true},
-                {l:"= REVENUE NETO (Ve)",                  v:S_.rev_total.p50,                             b:1,c:C.deep,t:1},
-                {l:"(−) Costos de Flota",                  v:-S_.costo_flota.p50,                          c:C.orange},
-                {l:"(−) Personal",                         v:-S_.costo_personal.p50,                       c:C.red},
-                {l:"(−) Gastos Fijos",                     v:-S_.gastos_fijos.p50,                         c:C.red},
-                {l:"= EBITDA",                             v:S_.ebitda.p50,                                b:1,c:S_.ebitda.p50>=0?C.green:C.red,t:1},
-                {l:"    Margen EBITDA",                    extra:pct(S_.margen_ebitda.p50),                c:C.muted,indent:true},
-                {l:"(−) Depreciación",                     v:-S_.dep_anual.p50,                            c:C.muted},
-                {l:"= EBIT",                               v:S_.ebit.p50,                                  b:1,c:C.blue,t:1},
-                {l:"(−) Intereses (deuda flota)",          v:-S_.intereses.p50,                            c:C.orange},
-                {l:`= EBT (base imponible)`,               v:S_.ebit.p50-S_.intereses.p50,                 b:1,c:C.blue,t:1},
-                {l:`(−) IR ${params.ir.mean}%`,            v:-S_.impuesto.p50,                             c:C.muted},
-                {l:"= UTILIDAD NETA",                      v:S_.util_neta.p50,                             b:1,c:S_.util_neta.p50>=0?C.deep:C.red,t:1},
-                {l:"    Margen neto",                      extra:pct(S_.margen_neto.p50),                  c:C.muted,indent:true},
-                {l:"(−) Cargo capital (Flota × WACC)",     v:-(S_.val_total_flota.p50*(params.wacc.mean/100)),c:C.red},
-                {l:"    NOPAT",                            v:S_.nopat.p50,                                 c:C.muted,indent:true},
-                {l:"= EVA [NOPAT − Capital×WACC]",         v:S_.eva.p50,                                   b:1,c:S_.eva.p50>=0?C.gold:C.red,t:1},
+                {l:"POTENCIAL ECONÓMICO (Pe)",              v: S_.Pe.p50,                                       b:1, c:C.navy},
+                {l:"  (−) Brecha Disponibilidad",           v:-S_.brecha_disp.p50,                              c:C.purple, indent:true},
+                {l:"  (−) Brecha Utilización",              v:-S_.brecha_util.p50,                              c:C.purple, indent:true},
+                {l:"  (−) Brecha Yield",                    v:-S_.brecha_yield.p50,                             c:C.purple, indent:true},
+                {l:"  (−) Brecha Calidad",                  v:-S_.brecha_cal.p50,                               c:C.purple, indent:true},
+                {l:"= REVENUE NETO (Ve)",                   v: S_.rev_total.p50,                                b:1, c:C.deep, t:1},
+                {l:"(−) Costos de Flota",                   v:-S_.costo_flota.p50,                              c:C.orange},
+                {l:"(−) Personal",                          v:-S_.costo_personal.p50,                           c:C.red},
+                {l:"(−) Gastos Fijos",                      v:-S_.gastos_fijos.p50,                             c:C.red},
+                {l:"= EBITDA",                              v: S_.ebitda.p50,                                   b:1, c:S_.ebitda.p50>=0?C.green:C.red, t:1},
+                {l:"    Margen EBITDA",                     extra: pct(S_.margen_ebitda.p50),                   c:C.muted, indent:true},
+                {l:"(−) Depreciación",                      v:-S_.dep_anual.p50,                                c:C.muted},
+                {l:"= EBIT",                                v: S_.ebit.p50,                                     b:1, c:C.blue, t:1},
+                {l:"(−) Intereses (deuda flota)",           v:-S_.intereses.p50,                                c:C.orange},
+                {l:"= EBT (base imponible)",                v: S_.ebt.p50,                                      b:1, c:C.blue, t:1},
+                {l:`(−) IR ${params.ir.mean}%`,             v:-S_.impuesto.p50,                                 c:C.muted},
+                {l:"= UTILIDAD NETA",                       v: S_.util_neta.p50,                                b:1, c:S_.util_neta.p50>=0?C.deep:C.red, t:1},
+                {l:"    Margen neto",                       extra: pct(S_.margen_neto.p50),                     c:C.muted, indent:true},
+                {l:"    NOPAT (EBIT × (1−IR))",             v: S_.nopat.p50,                                    c:C.muted, indent:true},
+                {l:"(−) Cargo capital (Flota × WACC)",      v:-(S_.val_total_flota.p50*(params.wacc.mean/100)), c:C.red},
+                {l:"    Capital invertido (flota)",          v: S_.val_total_flota.p50,                         c:C.muted, indent:true},
+                {l:"= EVA [NOPAT − Capital×WACC]",          v: S_.eva.p50,                                      b:1, c:S_.eva.p50>=0?C.gold:C.red, t:1},
               ].map((r,i)=>(
                 <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"3px 0",
-                  fontFamily:mono,fontSize:r.indent?11:12,fontWeight:r.b?700:400,
+                  fontFamily:mono, fontSize:r.indent?11:12, fontWeight:r.b?700:400,
                   borderTop:r.t?`1px solid ${C.border}`:"none",
-                  marginLeft:r.indent?14:0,opacity:r.indent?0.8:1}}>
+                  marginLeft:r.indent?14:0, opacity:r.indent?0.8:1}}>
                   <span style={{color:r.indent?C.muted:C.text}}>{r.l}</span>
-                  <span style={{color:r.c,fontWeight:r.b?700:500}}>
+                  <span style={{color:r.c, fontWeight:r.b?700:500}}>
                     {r.extra ? r.extra : `$${fmtF(Math.round(r.v||0))}`}
                   </span>
                 </div>
@@ -672,11 +765,9 @@ export default function SimuladorRentaAutos(){
         {/* ══ OAE ══ */}
         {activeTab==="oae"&&S_&&(
           <div>
-            {/* OAE Score */}
             <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"20px 24px",marginBottom:14}}>
               <div style={{fontSize:14,fontWeight:700,color:C.deep,marginBottom:4}}>📐 OAE — Overall Asset Effectiveness</div>
-              <div style={{fontSize:11,color:C.muted,marginBottom:16}}>OAE = D × U × Y × Q = Ve / (Cp × Vu-ref) — Promundial Consulting Group · Najas (2026)</div>
-
+              <div style={{fontSize:11,color:C.muted,marginBottom:16}}>OAE = D × U × Y × Q = Ve / Cp · Promundial Consulting Group · Najas (2026)</div>
               <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:20}}>
                 {[["D — Disponibilidad",S_.D,C.teal,"⚙️"],["U — Utilización",S_.U,C.blue,"📅"],
                   ["Y — Yield",S_.Y,C.orange,"💲"],["Q — Calidad",S_.Q,C.purple,"⭐"],
@@ -689,48 +780,28 @@ export default function SimuladorRentaAutos(){
                   </div>
                 ))}
               </div>
-
-              {/* Barras de potencial */}
-              <div style={{marginBottom:8,fontSize:12,fontWeight:600,color:C.deep}}>Potencial Económico — cascada de captura</div>
-              <OAEBar label="Disponibilidad (D)" value={S_.D.p50} max={1} color={C.teal} brecha={S_.brecha_disp.p50} icon="⚙️"/>
-              <OAEBar label="Utilización (U)" value={S_.U.p50} max={1} color={C.blue} brecha={S_.brecha_util.p50} icon="📅"/>
-              <OAEBar label="Yield (Y)" value={S_.Y.p50} max={1} color={C.orange} brecha={S_.brecha_yield.p50} icon="💲"/>
-              <OAEBar label="Calidad (Q)" value={S_.Q.p50} max={1} color={C.purple} brecha={S_.brecha_cal.p50} icon="⭐"/>
+              <div style={{marginBottom:8,fontSize:12,fontWeight:600,color:C.deep}}>Potencial Económico — cascada de captura (P50)</div>
+              <OAEBar label="Disponibilidad (D)" value={S_.D.p50} color={C.teal}   brecha={S_.brecha_disp.p50}  Pe={S_.Pe.p50} icon="⚙️"/>
+              <OAEBar label="Utilización (U)"    value={S_.U.p50} color={C.blue}   brecha={S_.brecha_util.p50}  Pe={S_.Pe.p50} icon="📅"/>
+              <OAEBar label="Yield (Y)"          value={S_.Y.p50} color={C.orange} brecha={S_.brecha_yield.p50} Pe={S_.Pe.p50} icon="💲"/>
+              <OAEBar label="Calidad (Q)"        value={S_.Q.p50} color={C.purple} brecha={S_.brecha_cal.p50}   Pe={S_.Pe.p50} icon="⭐"/>
             </div>
 
             {/* Diagnóstico por dimensión */}
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:14}}>
               {[
                 {title:"⚙️ Disponibilidad",color:C.teal,val:S_.D.p50,brecha:S_.brecha_disp.p50,
-                  factores:[
-                    ["Mant. preventivo",params.mant_preventivo_pct.mean,"%"],
-                    ["Mant. correctivo",params.mant_correctivo_pct.mean,"%"],
-                    ["Siniestros",params.siniestro_disp_pct.mean,"%"],
-                    ["Prep./entrega",params.prep_entrega_pct.mean,"%"],
-                  ],
+                  factores:[["Mant. preventivo",params.mant_preventivo_pct.mean,"%"],["Mant. correctivo",params.mant_correctivo_pct.mean,"%"],["Siniestros",params.siniestro_disp_pct.mean,"%"],["Prep./entrega",params.prep_entrega_pct.mean,"%"]],
                   lectura:"Cp → Cd: días que el vehículo no puede ser rentado por causas internas."},
                 {title:"📅 Utilización",color:C.blue,val:S_.U.p50,brecha:S_.brecha_util.p50,
-                  factores:[
-                    ["No-shows/cancelaciones",params.noshow_pct.mean,"%"],
-                    ["Turnaround entre contratos",params.turnaround_pct.mean,"%"],
-                    ["Estacionalidad baja",params.estacionalidad_pct.mean,"%"],
-                  ],
-                  lectura:"Cd → Cu: días disponibles que no generan renta por causas comerciales o de programación."},
+                  factores:[["No-shows/cancelaciones",params.noshow_pct.mean,"%"],["Turnaround entre contratos",params.turnaround_pct.mean,"%"],["Estacionalidad baja",params.estacionalidad_pct.mean,"%"]],
+                  lectura:"Cd → Cu: días disponibles que no generan renta por causas comerciales."},
                 {title:"💲 Yield",color:C.orange,val:S_.Y.p50,brecha:S_.brecha_yield.p50,
-                  factores:[
-                    ["Upgrades gratuitos",params.upgrade_gratuito_pct.mean,"%"],
-                    ["Brecha tarifa negociada",params.tarifa_negociada_pct.mean,"%"],
-                    ["Desc. mix (pond.)",descMixMedio(mixDiaria).toFixed(1),"%"],
-                  ],
-                  lectura:"Cu → Vc: diferencia entre la tarifa de lista y el precio efectivamente cobrado."},
+                  factores:[["Upgrades gratuitos",params.upgrade_gratuito_pct.mean,"%"],["Brecha tarifa negociada",params.tarifa_negociada_pct.mean,"%"],["Desc. mix pond.",descMixMedio(mixDiaria).toFixed(1),"%"]],
+                  lectura:"Cu → Vc: diferencia entre tarifa rack y precio efectivamente cobrado."},
                 {title:"⭐ Calidad",color:C.purple,val:S_.Q.p50,brecha:S_.brecha_cal.p50,
-                  factores:[
-                    ["Daños no cobrados",params.danos_no_cobrados.mean,"%"],
-                    ["No-shows sin cargo",params.noshow_sin_cargo.mean,"%"],
-                    ["Reclamos seguro",params.reclamos_seguro.mean,"%"],
-                    ["Compensaciones/quejas",params.compensaciones.mean,"%"],
-                  ],
-                  lectura:"Vc → Ve: ingreso cobrado que no llega como valor neto entregado."},
+                  factores:[["Daños no cobrados",params.danos_no_cobrados.mean,"%"],["No-shows sin cargo",params.noshow_sin_cargo.mean,"%"],["Reclamos seguro",params.reclamos_seguro.mean,"%"],["Compensaciones",params.compensaciones.mean,"%"]],
+                  lectura:"Vc → Ve: ingreso cobrado que no llega como valor entregado neto."},
               ].map(({title,color,val,brecha,factores,lectura})=>(
                 <div key={title} style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"16px 18px",borderTop:`3px solid ${color}`}}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
@@ -760,35 +831,33 @@ export default function SimuladorRentaAutos(){
           <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"20px 24px"}}>
             <div style={{fontSize:14,fontWeight:700,color:C.deep,marginBottom:20}}>💧 Cascada P&L — Valores P50 anuales</div>
             {[
-              {label:"Potencial Económico (Pe)",val:S_.Pe.p50,type:"ref"},
-              {label:"− Brecha Disponibilidad", val:-S_.brecha_disp.p50,type:"oae"},
-              {label:"− Brecha Utilización",    val:-S_.brecha_util.p50,type:"oae"},
-              {label:"− Brecha Yield",          val:-S_.brecha_yield.p50,type:"oae"},
-              {label:"− Brecha Calidad",        val:-S_.brecha_cal.p50,type:"oae"},
-              {label:"= Revenue (Ve)",           val:S_.Pe_capturado.p50,type:"total"},
-              {label:"− Costos de Flota",        val:-S_.costo_flota.p50,type:"neg"},
-              {label:"− Personal",               val:-S_.costo_personal.p50,type:"neg"},
-              {label:"− Gastos Fijos",           val:-S_.gastos_fijos.p50,type:"neg"},
-              {label:"= EBITDA",                 val:S_.ebitda.p50,type:"total"},
-              {label:"− Depreciación",           val:-S_.dep_anual.p50,type:"neg"},
-              {label:"= EBIT",                   val:S_.ebit.p50,type:"total"},
-              {label:"− Intereses",              val:-S_.intereses.p50,type:"neg"},
-              {label:"− Impuestos",              val:-S_.impuesto.p50,type:"neg"},
-              {label:"= Utilidad Neta",          val:S_.util_neta.p50,type:"total"},
+              {label:"Potencial Económico (Pe)",  val: S_.Pe.p50,             type:"ref"},
+              {label:"− Brecha Disponibilidad",   val:-S_.brecha_disp.p50,   type:"oae"},
+              {label:"− Brecha Utilización",      val:-S_.brecha_util.p50,   type:"oae"},
+              {label:"− Brecha Yield",            val:-S_.brecha_yield.p50,  type:"oae"},
+              {label:"− Brecha Calidad",          val:-S_.brecha_cal.p50,    type:"oae"},
+              {label:"= Revenue Neto (Ve)",       val: S_.rev_total.p50,     type:"total"},
+              {label:"− Costos de Flota",         val:-S_.costo_flota.p50,   type:"neg"},
+              {label:"− Personal",                val:-S_.costo_personal.p50,type:"neg"},
+              {label:"− Gastos Fijos",            val:-S_.gastos_fijos.p50,  type:"neg"},
+              {label:"= EBITDA",                  val: S_.ebitda.p50,        type:"total"},
+              {label:"− Depreciación",            val:-S_.dep_anual.p50,     type:"neg"},
+              {label:"= EBIT",                    val: S_.ebit.p50,          type:"total"},
+              {label:"− Intereses",               val:-S_.intereses.p50,     type:"neg"},
+              {label:"= EBT (base imponible)",    val: S_.ebt.p50,           type:"total"},
+              {label:"− Impuestos",               val:-S_.impuesto.p50,      type:"neg"},
+              {label:"= Utilidad Neta",           val: S_.util_neta.p50,     type:"total"},
             ].map(({label,val,type})=>{
               const isT=type==="total",isOae=type==="oae",isRef=type==="ref";
               const col=isRef?C.navy:isT?C.deep:isOae?C.purple:C.red;
               const barW=Math.min(100,Math.abs(val)/Math.max(S_.Pe.p50,1)*100);
               return(
-                <div key={label} style={{display:"flex",alignItems:"center",gap:10,marginBottom:isT?14:6,
-                  paddingTop:isT?10:0,borderTop:isT?`1px solid ${C.border}`:"none"}}>
-                  <div style={{width:240,fontSize:isT||isRef?13:12,fontWeight:isT||isRef?700:400,
-                    color:isT?C.deep:isRef?C.navy:isOae?C.purple:C.muted,flexShrink:0}}>{label}</div>
+                <div key={label} style={{display:"flex",alignItems:"center",gap:10,marginBottom:isT?14:6,paddingTop:isT?10:0,borderTop:isT?`1px solid ${C.border}`:"none"}}>
+                  <div style={{width:240,fontSize:isT||isRef?13:12,fontWeight:isT||isRef?700:400,color:isT?C.deep:isRef?C.navy:isOae?C.purple:C.muted,flexShrink:0}}>{label}</div>
                   <div style={{flex:1,background:C.light,borderRadius:4,height:isT||isRef?18:10,overflow:"hidden"}}>
                     <div style={{width:`${barW}%`,height:"100%",background:col,borderRadius:4,opacity:isT||isRef?1:0.7}}/>
                   </div>
-                  <div style={{width:100,textAlign:"right",fontFamily:mono,fontSize:isT||isRef?14:12,
-                    fontWeight:isT||isRef?800:500,color:val>=0?col:C.red,flexShrink:0}}>{fmt$(val)}</div>
+                  <div style={{width:100,textAlign:"right",fontFamily:mono,fontSize:isT||isRef?14:12,fontWeight:isT||isRef?800:500,color:val>=0?col:C.red,flexShrink:0}}>{fmt$(val)}</div>
                 </div>
               );
             })}
@@ -798,17 +867,16 @@ export default function SimuladorRentaAutos(){
         {/* ══ TORNADO ══ */}
         {activeTab==="tornado"&&S_&&(
           <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"20px 24px"}}>
-            <div style={{fontSize:14,fontWeight:700,color:C.deep,marginBottom:6}}>🌪️ Sensibilidad — Rango P10/P90 en EVA</div>
-            <div style={{fontSize:11,color:C.muted,marginBottom:16}}>Variables con σ &gt; 0, ordenadas por impacto</div>
+            <div style={{fontSize:14,fontWeight:700,color:C.deep,marginBottom:6}}>🌪️ Sensibilidad — Impacto individual en EVA (P10→P90)</div>
+            <div style={{fontSize:11,color:C.muted,marginBottom:16}}>
+              Cada barra muestra el rango P10/P90 del EVA cuando <em>solo esa variable</em> es estocástica (las demás determinísticas). Variables con σ = 0 no aparecen.
+            </div>
             {(()=>{
-              const items=[];
-              GROUPS.forEach(g=>Object.entries(g.params).forEach(([k,v])=>{
-                if((params[k]?.std||0)>0) items.push({label:v.label,impact:Math.abs(S_.eva.p90-S_.eva.p10),group:g.id});
-              }));
-              items.sort((a,b)=>b.impact-a.impact);
+              const items=(S_._sensitivity||[]).slice(0,12);
+              if(!items.length) return <div style={{color:C.muted,fontSize:12,padding:"20px 0"}}>Todas las variables tienen σ = 0. Ajusta las desviaciones estándar en Supuestos para ver el tornado.</div>;
               const maxI=items[0]?.impact||1;
               const groupColors={oae_disp:C.teal,oae_util:C.blue,oae_yield:C.orange,oae_cal:C.purple};
-              return items.slice(0,12).map(({label,impact,group})=>{
+              return items.map(({label,impact,group})=>{
                 const col=groupColors[group]||C.green;
                 return(
                   <div key={label} style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
@@ -821,6 +889,13 @@ export default function SimuladorRentaAutos(){
                 );
               });
             })()}
+            <div style={{marginTop:16,fontSize:11,color:C.muted}}>
+              Colores: <span style={{color:C.teal}}>■</span> Disponibilidad &nbsp;
+              <span style={{color:C.blue}}>■</span> Utilización &nbsp;
+              <span style={{color:C.orange}}>■</span> Yield &nbsp;
+              <span style={{color:C.purple}}>■</span> Calidad &nbsp;
+              <span style={{color:C.green}}>■</span> Otros
+            </div>
           </div>
         )}
 
@@ -834,7 +909,7 @@ export default function SimuladorRentaAutos(){
       </div>
 
       <div style={{textAlign:"center",padding:"20px",fontSize:11,color:C.muted}}>
-        Promundial Consulting Group · Simulador Renta de Autos v5 · OAE = D × U × Y × Q · Najas (2026)
+        Promundial Consulting Group · Simulador Renta de Autos v7 · OAE = D × U × Y × Q · Najas (2026)
       </div>
     </div>
   );
