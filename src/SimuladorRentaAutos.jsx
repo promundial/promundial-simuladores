@@ -251,6 +251,51 @@ function runSim(params,mixD,mixC,N=3000){
 }
 
 // ─── UI Components ─────────────────────────────────────────────────
+function Histo({values,p10,p50,p90,color,label,h=72}){
+  const bins=28,mn=Math.min(...values),mx=Math.max(...values),rng=mx-mn||1,bw=rng/bins;
+  const cts=new Array(bins).fill(0);
+  values.forEach(v=>{let i=Math.floor((v-mn)/bw);if(i>=bins)i=bins-1;cts[i]++;});
+  const maxC=Math.max(...cts)||1;
+  const W=500,toX=v=>Math.max(0,Math.min(W,((v-mn)/rng)*W));
+  const avg=values.reduce((s,v)=>s+v,0)/values.length;
+  return(
+    <div style={{marginBottom:16,width:"100%"}}>
+      <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+        <span style={{fontSize:13,fontWeight:700,color:C.deep}}>{label}</span>
+        <span style={{fontFamily:mono,fontSize:11,color:C.muted}}>μ ${fmtF(Math.round(avg))}</span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${h+22}`} style={{width:"100%",display:"block"}}>
+        {cts.map((c,i)=><rect key={i} x={i*W/bins} y={h-(c/maxC)*h} width={W/bins-.5} height={(c/maxC)*h} fill={color} opacity={.45} rx={1}/>)}
+        {[[p10,"#D06838","P10"],[p50,C.deep,"P50"],[p90,C.blue,"P90"]].map(([v,cl,lb])=>(
+          <g key={lb}>
+            <line x1={toX(v)} x2={toX(v)} y1={0} y2={h} stroke={cl} strokeWidth={1.5} strokeDasharray={lb==="P50"?"0":"3,2"}/>
+            <text x={toX(v)} y={h+18} fill={cl} fontSize="9" fontFamily={mono} textAnchor="middle">{lb} ${fmtF(Math.round(v))}</text>
+          </g>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+function HistoPanel({S_}){
+  // Build synthetic distribution arrays from p10/p50/p90 using normal approximation
+  const synth=(p10,p50,p90,N=500)=>{
+    const sigma=(p90-p10)/2.563;const mu=p50;
+    return Array.from({length:N},()=>{
+      let u=0,v=0;while(!u)u=Math.random();while(!v)v=Math.random();
+      return mu+sigma*Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
+    });
+  };
+  return(
+    <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"18px 20px"}}>
+      <div style={{fontSize:13,fontWeight:700,color:C.deep,marginBottom:14}}>📈 Distribución de Resultados (Monte Carlo)</div>
+      <Histo values={synth(S_.ebitda.p10,S_.ebitda.p50,S_.ebitda.p90)} p10={S_.ebitda.p10} p50={S_.ebitda.p50} p90={S_.ebitda.p90} color={C.green} label="EBITDA"/>
+      <Histo values={synth(S_.util_neta.p10,S_.util_neta.p50,S_.util_neta.p90)} p10={S_.util_neta.p10} p50={S_.util_neta.p50} p90={S_.util_neta.p90} color={C.blue} label="Utilidad Neta"/>
+      <Histo values={synth(S_.eva.p10,S_.eva.p50,S_.eva.p90)} p10={S_.eva.p10} p50={S_.eva.p50} p90={S_.eva.p90} color={C.gold} label="EVA"/>
+    </div>
+  );
+}
+
 function Section({title,open,onToggle,children}){
   return(
     <div style={{border:`1px solid ${C.border}`,borderRadius:8,marginBottom:10,overflow:"hidden"}}>
@@ -564,7 +609,7 @@ export default function SimuladorRentaAutos(){
             </div>
 
             {/* Costos */}
-            <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"18px 20px"}}>
+            <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"18px 20px",marginBottom:14}}>
               <div style={{fontSize:13,fontWeight:700,color:C.deep,marginBottom:14}}>📊 Estructura de Costos (P50 anual)</div>
               {[["Costos flota",S_.costo_flota.p50,C.orange],["Personal",S_.costo_personal.p50,C.blue],
                 ["Gastos fijos",S_.gastos_fijos.p50,C.muted],["Depreciación",S_.dep_anual.p50,C.teal],
@@ -580,6 +625,47 @@ export default function SimuladorRentaAutos(){
                 </div>
               ))}
             </div>
+
+            {/* P&L Statement */}
+            <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"18px 20px",marginBottom:14}}>
+              <div style={{fontSize:13,fontWeight:700,color:C.deep,marginBottom:14}}>📋 P&L Renta de Autos — Mediana Anual (P50)</div>
+              {[
+                {l:"POTENCIAL ECONÓMICO (Pe)",             v:S_.Pe.p50,                                    b:1,c:C.navy},
+                {l:"  (−) Brecha Disponibilidad",          v:-S_.brecha_disp.p50,                          c:C.purple,indent:true},
+                {l:"  (−) Brecha Utilización",             v:-S_.brecha_util.p50,                          c:C.purple,indent:true},
+                {l:"  (−) Brecha Yield",                   v:-S_.brecha_yield.p50,                         c:C.purple,indent:true},
+                {l:"  (−) Brecha Calidad",                 v:-S_.brecha_cal.p50,                           c:C.purple,indent:true},
+                {l:"= REVENUE NETO (Ve)",                  v:S_.rev_total.p50,                             b:1,c:C.deep,t:1},
+                {l:"(−) Costos de Flota",                  v:-S_.costo_flota.p50,                          c:C.orange},
+                {l:"(−) Personal",                         v:-S_.costo_personal.p50,                       c:C.red},
+                {l:"(−) Gastos Fijos",                     v:-S_.gastos_fijos.p50,                         c:C.red},
+                {l:"= EBITDA",                             v:S_.ebitda.p50,                                b:1,c:S_.ebitda.p50>=0?C.green:C.red,t:1},
+                {l:"    Margen EBITDA",                    extra:pct(S_.margen_ebitda.p50),                c:C.muted,indent:true},
+                {l:"(−) Depreciación",                     v:-S_.dep_anual.p50,                            c:C.muted},
+                {l:"= EBIT",                               v:S_.ebit.p50,                                  b:1,c:C.blue,t:1},
+                {l:"(−) Intereses (deuda flota)",          v:-S_.intereses.p50,                            c:C.orange},
+                {l:`= EBT (base imponible)`,               v:S_.ebit.p50-S_.intereses.p50,                 b:1,c:C.blue,t:1},
+                {l:`(−) IR ${params.ir.mean}%`,            v:-S_.impuesto.p50,                             c:C.muted},
+                {l:"= UTILIDAD NETA",                      v:S_.util_neta.p50,                             b:1,c:S_.util_neta.p50>=0?C.deep:C.red,t:1},
+                {l:"    Margen neto",                      extra:pct(S_.margen_neto.p50),                  c:C.muted,indent:true},
+                {l:"(−) Cargo capital (Flota × WACC)",     v:-(S_.val_total_flota.p50*(params.wacc.mean/100)),c:C.red},
+                {l:"    NOPAT",                            v:S_.nopat.p50,                                 c:C.muted,indent:true},
+                {l:"= EVA [NOPAT − Capital×WACC]",         v:S_.eva.p50,                                   b:1,c:S_.eva.p50>=0?C.gold:C.red,t:1},
+              ].map((r,i)=>(
+                <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"3px 0",
+                  fontFamily:mono,fontSize:r.indent?11:12,fontWeight:r.b?700:400,
+                  borderTop:r.t?`1px solid ${C.border}`:"none",
+                  marginLeft:r.indent?14:0,opacity:r.indent?0.8:1}}>
+                  <span style={{color:r.indent?C.muted:C.text}}>{r.l}</span>
+                  <span style={{color:r.c,fontWeight:r.b?700:500}}>
+                    {r.extra ? r.extra : `$${fmtF(Math.round(r.v||0))}`}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {/* Histogramas */}
+            <HistoPanel S_={S_}/>
           </div>
         )}
 
