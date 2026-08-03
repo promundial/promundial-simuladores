@@ -1218,10 +1218,10 @@ export default function SimuladorRentaAutos(){
               <div style={{fontSize:11,letterSpacing:2,textTransform:"uppercase",color:C.gold,marginBottom:12,fontWeight:600}}>📐 Potencial Económico — OAE = D × U × Y × Q</div>
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:16}}>
                 {[
-                  ["Potencial Económico (Pe)","100% D·U·Y·Q",fmt$(S_.Pe.p50),fmt$(S_.Pe.p10),fmt$(S_.Pe.p90),"#fff"],
-                  ["Pe Capturado (Ve)","OAE real",fmt$(S_.Pe_capturado.p50),fmt$(S_.Pe_capturado.p10),fmt$(S_.Pe_capturado.p90),C.gold],
+                  ["Potencial Económico (Pe)","100% — si OAE = 100%",fmt$(S_.Pe.p50),fmt$(S_.Pe.p10),fmt$(S_.Pe.p90),"#fff"],
+                  ["Pe Capturado (Ve)",pct(S_.OAE.p50)+" del Pe total",fmt$(S_.Pe_capturado.p50),fmt$(S_.Pe_capturado.p10),fmt$(S_.Pe_capturado.p90),C.gold],
                   ["OAE Index","D × U × Y × Q",pct(S_.OAE.p50),pct(S_.OAE.p10),pct(S_.OAE.p90),S_.OAE.p50>0.7?"#4ae88a":S_.OAE.p50>0.5?C.gold:C.red],
-                  ["Pe No Capturado","brecha total",fmt$(S_.Pe.p50-S_.Pe_capturado.p50),"—","—",C.red],
+                  ["Pe No Capturado",pct(1-S_.OAE.p50)+" del Pe total",fmt$(S_.Pe.p50-S_.Pe_capturado.p50),"—","—",C.red],
                 ].map(([l,s,v,lo,hi,col])=>(
                   <div key={l}>
                     <div style={{fontSize:10,color:"#9ab8cc"}}>{l}</div>
@@ -1244,8 +1244,8 @@ export default function SimuladorRentaAutos(){
                     <div key={label} style={{background:"rgba(255,255,255,0.06)",borderRadius:8,padding:"12px 14px",borderLeft:`3px solid ${color}`}}>
                       <div style={{fontSize:10,color:"#9ab8cc",marginBottom:4}}>{icon} {label}</div>
                       <div style={{fontSize:18,fontWeight:700,color,fontFamily:mono}}>{fmt$(val)}</div>
-                      <div style={{fontSize:10,color:"#7a9ab0",marginTop:2}}>Índice: {pct(dim)}</div>
-                      <div style={{fontSize:10,color:"#7a9ab0"}}>{pct(val/Math.max(S_.Pe.p50,1))} del Pe</div>
+                      <div style={{fontSize:11,fontWeight:600,color,marginTop:2}}>{pct(val/Math.max(S_.Pe.p50,1))} del Pe</div>
+                      <div style={{fontSize:10,color:"#7a9ab0",marginTop:1}}>Índice: {pct(dim)}</div>
                     </div>
                   ))}
                 </div>
