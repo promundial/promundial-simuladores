@@ -1,448 +1,508 @@
 import { useState, useCallback, useRef } from "react";
 
 // ═══════════════════════════════════════════════════════════════════
-// SIMULADOR MONTE CARLO — RENTA DE AUTOS  v1
-// Modelo mixto: Renta Diaria (turismo/aeropuerto) + Corporativa
-// Métricas: EVA · EBITDA · Utilidad Neta
+// SIMULADOR MONTE CARLO — RENTA DE AUTOS  v3
+// Mix de categorías por canal (diaria + corporativa)
 // Promundial Consulting Group
 // ═══════════════════════════════════════════════════════════════════
 
 const C = {
-  deep:   "#0F2A3F",
-  navy:   "#1A4060",
-  teal:   "#1A7A6D",
-  gold:   "#C8922A",
-  light:  "#F4F7F9",
-  card:   "#FFFFFF",
-  border: "#DDE4EA",
-  text:   "#1E2A35",
-  muted:  "#6B7A8A",
-  red:    "#B03A3A",
-  green:  "#1A6B3A",
-  blue:   "#2B5C8E",
-  orange: "#C86820",
+  deep:"#0F3521", green:"#1A5C38", gold:"#C8922A", light:"#F7F5F0",
+  card:"#FFFFFF", border:"#E2DDD5", text:"#2C2C2C", muted:"#7A7267",
+  red:"#B34040", blue:"#2E5E8E", teal:"#1A7A6D", orange:"#D4772C",
+  navy:"#1A4060",
 };
+const mono = "'IBM Plex Mono','Courier New',monospace";
+const sans = "'Segoe UI',system-ui,sans-serif";
 
-// ─── Monte Carlo helpers ───────────────────────────────────────────
-function randNorm(mean, std) {
-  if (std <= 0) return mean;
-  let u = 0, v = 0;
-  while (!u) u = Math.random();
-  while (!v) v = Math.random();
-  return mean + std * Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+// ─── Monte Carlo ───────────────────────────────────────────────────
+function randn(){let u=0,v=0;while(!u)u=Math.random();while(!v)v=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);}
+function S(d){return Math.max(d.min,Math.min(d.max,d.mean+randn()*d.std));}
+function pct(v,d=1){return(v*100).toFixed(d)+"%";}
+function fmt$(n){if(isNaN(n))return"—";const s=n<0?"−$":"$",a=Math.abs(n);if(a>=1e6)return s+(a/1e6).toFixed(2)+"M";if(a>=1e3)return s+(a/1e3).toFixed(1)+"K";return s+a.toFixed(0);}
+function fmtF(n){return new Intl.NumberFormat("en-US",{maximumFractionDigits:0}).format(n);}
+function percentile(arr,p){const s=[...arr].sort((a,b)=>a-b);return s[Math.floor(p/100*(s.length-1))];}
+function stats(arr){return{p10:percentile(arr,10),p50:percentile(arr,50),p90:percentile(arr,90)};}
+
+// ─── Mix helpers ───────────────────────────────────────────────────
+function tarifaMixMedia(mix){
+  const total=mix.reduce((s,c)=>s+c.mix_pct,0)||1;
+  return mix.reduce((s,c)=>s+(c.mix_pct/total)*c.tarifa_mean,0);
 }
-function cl(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
-function S(p, k) { const d = p[k]; return cl(randNorm(d.mean, d.std), d.min, d.max); }
-function pct(v, d=1) { return (v*100).toFixed(d) + "%"; }
-function fmt$(n, d=0) {
-  if (isNaN(n)) return "—";
-  const s = n < 0 ? "−$" : "$";
-  const a = Math.abs(n);
-  if (a >= 1e6) return s + (a/1e6).toFixed(2) + "M";
-  if (a >= 1e3) return s + (a/1e3).toFixed(1) + "K";
-  return s + a.toFixed(d);
+function tarifaMixStd(mix){
+  const total=mix.reduce((s,c)=>s+c.mix_pct,0)||1;
+  return Math.sqrt(mix.reduce((s,c)=>s+(c.mix_pct/total)*c.tarifa_std**2,0));
 }
-function percentile(arr, p) {
-  const s = [...arr].sort((a,b)=>a-b);
-  return s[Math.floor(p/100*(s.length-1))];
+function descMixMedio(mix){
+  const total=mix.reduce((s,c)=>s+c.mix_pct,0)||1;
+  return mix.reduce((s,c)=>s+(c.mix_pct/total)*(c.desc_pct||0),0);
 }
-function stats(arr) {
-  return { p10: percentile(arr,10), p50: percentile(arr,50), p90: percentile(arr,90) };
-}
-
-// ─── Parameter definitions ─────────────────────────────────────────
-const PD = {
-  // FLOTA
-  flota_diaria:        {mean:80,  std:0,   min:1,    max:5000, label:"Flota renta diaria (unidades)",        unit:"u",  group:"flota", lever:true,  dir:1},
-  flota_corp:          {mean:40,  std:0,   min:0,    max:5000, label:"Flota contratos corporativos",          unit:"u",  group:"flota", lever:true,  dir:1},
-  valor_flota_diaria:  {mean:18000,std:0,  min:5000, max:200000,label:"Valor promedio auto flota diaria ($)", unit:"$",  group:"flota", lever:false},
-  valor_flota_corp:    {mean:22000,std:0,  min:5000, max:200000,label:"Valor promedio auto flota corp ($)",   unit:"$",  group:"flota", lever:false},
-  vida_util:           {mean:4,   std:0,   min:1,    max:10,   label:"Vida útil flota (años)",                unit:"yr", group:"flota", lever:false},
-  valor_residual_pct:  {mean:35,  std:3,   min:5,    max:70,   label:"Valor residual al cierre (%)",          unit:"%",  group:"flota", lever:false},
-
-  // OCUPACIÓN & TARIFA — DIARIA
-  ocupacion_diaria:    {mean:72,  std:6,   min:20,   max:98,   label:"Ocupación flota diaria (%)",            unit:"%",  group:"diaria", lever:true,  dir:1},
-  tarifa_diaria:       {mean:55,  std:8,   min:10,   max:500,  label:"Tarifa promedio renta diaria ($/día)",  unit:"$",  group:"diaria", lever:true,  dir:1},
-  dias_promedio_renta: {mean:3.5, std:0.5, min:1,    max:30,   label:"Días promedio por contrato diario",     unit:"d",  group:"diaria", lever:false},
-  descuento_diaria:    {mean:8,   std:2,   min:0,    max:30,   label:"Descuento promedio flota diaria (%)",   unit:"%",  group:"diaria", lever:true,  dir:-1},
-
-  // OCUPACIÓN & TARIFA — CORPORATIVA
-  ocupacion_corp:      {mean:88,  std:4,   min:50,   max:100,  label:"Ocupación flota corporativa (%)",       unit:"%",  group:"corp",   lever:true,  dir:1},
-  tarifa_corp_mes:     {mean:900, std:100, min:200,  max:5000, label:"Tarifa mensual contrato corporativo ($)",unit:"$", group:"corp",   lever:true,  dir:1},
-  plazo_contrato_corp: {mean:12,  std:2,   min:1,    max:60,   label:"Plazo promedio contrato corp (meses)",  unit:"m",  group:"corp",   lever:false},
-  descuento_corp:      {mean:12,  std:3,   min:0,    max:35,   label:"Descuento flota corporativa (%)",       unit:"%",  group:"corp",   lever:true,  dir:-1},
-
-  // COSTOS OPERATIVOS
-  mant_diaria_mes:     {mean:180, std:30,  min:0,    max:2000, label:"Mantenimiento/auto diaria ($/mes)",     unit:"$",  group:"costos", lever:true,  dir:-1},
-  mant_corp_mes:       {mean:150, std:25,  min:0,    max:2000, label:"Mantenimiento/auto corp ($/mes)",       unit:"$",  group:"costos", lever:true,  dir:-1},
-  seguro_mes:          {mean:120, std:15,  min:30,   max:1000, label:"Seguro promedio/auto ($/mes)",          unit:"$",  group:"costos", lever:true,  dir:-1},
-  lavado_limpieza:     {mean:25,  std:5,   min:0,    max:200,  label:"Lavado & limpieza/auto ($/mes)",        unit:"$",  group:"costos", lever:false},
-  combustible_diaria:  {mean:40,  std:8,   min:0,    max:300,  label:"Combustible/auto diaria ($/mes)",       unit:"$",  group:"costos", lever:false},
-  siniestros_pct:      {mean:3,   std:1,   min:0,    max:15,   label:"Siniestros (% ingresos diaria)",        unit:"%",  group:"costos", lever:true,  dir:-1},
-
-  // PERSONAL
-  agentes_diaria:      {mean:6,   std:0,   min:1,    max:200,  label:"Agentes renta diaria",                  unit:"u",  group:"rrhh",   lever:false},
-  sueldo_agente:       {mean:900, std:100, min:300,  max:5000, label:"Sueldo agente ($/mes)",                 unit:"$",  group:"rrhh",   lever:false},
-  ejecutivos_corp:     {mean:3,   std:0,   min:1,    max:50,   label:"Ejecutivos cuenta corporativa",         unit:"u",  group:"rrhh",   lever:false},
-  sueldo_ejecutivo:    {mean:1800,std:200, min:500,  max:10000,label:"Sueldo ejecutivo cuenta ($/mes)",       unit:"$",  group:"rrhh",   lever:false},
-  personal_ops:        {mean:8,   std:0,   min:1,    max:200,  label:"Personal operativo (mecánicos, logística)",unit:"u",group:"rrhh", lever:false},
-  sueldo_ops:          {mean:700, std:80,  min:200,  max:5000, label:"Sueldo personal ops ($/mes)",           unit:"$",  group:"rrhh",   lever:false},
-  admin_personal:      {mean:4,   std:0,   min:1,    max:100,  label:"Personal administrativo",               unit:"u",  group:"rrhh",   lever:false},
-  sueldo_admin:        {mean:1200,std:150, min:300,  max:8000, label:"Sueldo admin ($/mes)",                  unit:"$",  group:"rrhh",   lever:false},
-
-  // GASTOS FIJOS
-  alquiler_oficinas:   {mean:4000,std:500, min:0,    max:50000,label:"Alquiler oficinas/sucursales ($/mes)",  unit:"$",  group:"gastos", lever:true,  dir:-1},
-  alquiler_parqueo:    {mean:3000,std:400, min:0,    max:30000,label:"Alquiler parqueo flota ($/mes)",        unit:"$",  group:"gastos", lever:true,  dir:-1},
-  sistemas_crm:        {mean:1500,std:200, min:0,    max:15000,label:"Sistemas CRM & GPS ($/mes)",            unit:"$",  group:"gastos", lever:false},
-  marketing_mes:       {mean:5000,std:1000,min:0,    max:100000,label:"Marketing & publicidad ($/mes)",       unit:"$",  group:"gastos", lever:true,  dir:-1},
-  servicios_basicos:   {mean:2000,std:300, min:0,    max:20000,label:"Servicios básicos ($/mes)",             unit:"$",  group:"gastos", lever:false},
-
-  // FINANCIEROS
-  ir:                  {mean:25,  std:0,   min:0,    max:40,   label:"Impuesto a la renta (%)",               unit:"%",  group:"fin",    lever:false},
-  wacc:                {mean:12,  std:0,   min:5,    max:30,   label:"WACC (%)",                              unit:"%",  group:"fin",    lever:false},
-  deuda_pct:           {mean:60,  std:0,   min:0,    max:100,  label:"Deuda sobre valor flota (%)",           unit:"%",  group:"fin",    lever:true,  dir:-1},
-  tasa_deuda:          {mean:9,   std:1,   min:3,    max:20,   label:"Tasa de interés deuda (%)",             unit:"%",  group:"fin",    lever:true,  dir:-1},
-};
-
-// ─── Simulation engine ─────────────────────────────────────────────
-function simOne(p) {
-  const flota_d   = S(p,"flota_diaria");
-  const flota_c   = S(p,"flota_corp");
-  const val_d     = S(p,"valor_flota_diaria");
-  const val_c     = S(p,"valor_flota_corp");
-  const vida      = S(p,"vida_util");
-  const resid     = S(p,"valor_residual_pct")/100;
-
-  // ── Revenue diaria ──
-  const ocup_d    = S(p,"ocupacion_diaria")/100;
-  const tarifa_d  = S(p,"tarifa_diaria");
-  const desc_d    = S(p,"descuento_diaria")/100;
-  const dias_yr   = 365 * ocup_d;
-  const rev_diaria = flota_d * dias_yr * tarifa_d * (1 - desc_d);
-
-  // ── Revenue corporativa ──
-  const ocup_c    = S(p,"ocupacion_corp")/100;
-  const tarifa_c  = S(p,"tarifa_corp_mes");
-  const desc_c    = S(p,"descuento_corp")/100;
-  const rev_corp  = flota_c * 12 * tarifa_c * (1 - desc_c) * ocup_c;
-
-  const rev_total = rev_diaria + rev_corp;
-
-  // ── Depreciación ──
-  const val_total_flota = flota_d * val_d + flota_c * val_c;
-  const dep_anual = val_total_flota * (1 - resid) / vida;
-
-  // ── Costos operativos ──
-  const mant_d    = flota_d * S(p,"mant_diaria_mes") * 12;
-  const mant_c    = flota_c * S(p,"mant_corp_mes") * 12;
-  const seguro    = (flota_d + flota_c) * S(p,"seguro_mes") * 12;
-  const lavado    = (flota_d + flota_c) * S(p,"lavado_limpieza") * 12;
-  const combust   = flota_d * S(p,"combustible_diaria") * 12;
-  const siniestro = rev_diaria * S(p,"siniestros_pct")/100;
-  const costo_flota = mant_d + mant_c + seguro + lavado + combust + siniestro;
-
-  // ── Personal ──
-  const cost_agentes  = S(p,"agentes_diaria") * S(p,"sueldo_agente") * 12;
-  const cost_ejec     = S(p,"ejecutivos_corp") * S(p,"sueldo_ejecutivo") * 12;
-  const cost_ops      = S(p,"personal_ops") * S(p,"sueldo_ops") * 12;
-  const cost_admin    = S(p,"admin_personal") * S(p,"sueldo_admin") * 12;
-  const costo_personal = cost_agentes + cost_ejec + cost_ops + cost_admin;
-
-  // ── Gastos fijos ──
-  const gf_alq_of  = S(p,"alquiler_oficinas") * 12;
-  const gf_alq_pk  = S(p,"alquiler_parqueo") * 12;
-  const gf_sistemas= S(p,"sistemas_crm") * 12;
-  const gf_mktg    = S(p,"marketing_mes") * 12;
-  const gf_serv    = S(p,"servicios_basicos") * 12;
-  const gastos_fijos = gf_alq_of + gf_alq_pk + gf_sistemas + gf_mktg + gf_serv;
-
-  // ── P&L ──
-  const costo_total_sin_dep = costo_flota + costo_personal + gastos_fijos;
-  const ebitda = rev_total - costo_total_sin_dep;
-  const ebit   = ebitda - dep_anual;
-
-  // Intereses
-  const deuda = val_total_flota * S(p,"deuda_pct")/100;
-  const intereses = deuda * S(p,"tasa_deuda")/100;
-
-  const uai  = ebit - intereses;
-  const ir   = S(p,"ir")/100;
-  const impuesto = Math.max(0, uai * ir);
-  const util_neta = uai - impuesto;
-
-  // ── WACC & EVA ──
-  const wacc = S(p,"wacc")/100;
-  const capital_invertido = val_total_flota; // activo principal
-  const nopat = ebit * (1 - ir);
-  const cargo_capital = capital_invertido * wacc;
-  const eva = nopat - cargo_capital;
-
-  // ── Ratios ──
-  const margen_ebitda = rev_total > 0 ? ebitda / rev_total : 0;
-  const margen_neto   = rev_total > 0 ? util_neta / rev_total : 0;
-  const rev_por_auto  = rev_total / (flota_d + flota_c);
-  const roic = capital_invertido > 0 ? nopat / capital_invertido : 0;
-
-  return {
-    rev_total, rev_diaria, rev_corp,
-    ebitda, ebit, util_neta, eva,
-    dep_anual, intereses, impuesto,
-    costo_flota, costo_personal, gastos_fijos,
-    margen_ebitda, margen_neto,
-    val_total_flota, deuda, capital_invertido,
-    rev_por_auto, roic, nopat,
-    flota_total: flota_d + flota_c,
-    ocup_d, ocup_c,
-  };
+function sampleMix(mix){
+  const raw=mix.map(c=>Math.max(0,c.mix_pct+randn()*c.mix_std));
+  const total=raw.reduce((s,v)=>s+v,0)||1;
+  const w=raw.map(v=>v/total);
+  const tarifa=mix.reduce((s,c,i)=>s+w[i]*Math.max(0,c.tarifa_mean+randn()*c.tarifa_std),0);
+  const desc=mix.reduce((s,c,i)=>s+w[i]*Math.max(0,Math.min((c.desc_pct||0)+randn()*(c.desc_std||0),30))/100,0);
+  return{tarifa,desc};
 }
 
-function runSim(params, N=3000) {
-  const keys = ["rev_total","rev_diaria","rev_corp","ebitda","ebit","util_neta","eva",
-    "dep_anual","intereses","impuesto","costo_flota","costo_personal","gastos_fijos",
-    "margen_ebitda","margen_neto","val_total_flota","deuda","rev_por_auto","roic","nopat","ocup_d","ocup_c"];
-  const buckets = {};
-  keys.forEach(k => buckets[k] = []);
-  for (let i=0; i<N; i++) {
-    const r = simOne(params);
-    keys.forEach(k => buckets[k].push(r[k]));
-  }
-  const out = {};
-  keys.forEach(k => out[k] = stats(buckets[k]));
+// ─── Default mix data ──────────────────────────────────────────────
+const DEFAULT_MIX_DIARIA = [
+  {cat:"Economy",          mix_pct:18, mix_std:2, tarifa_mean:35,  tarifa_std:5,  desc_pct:5,  desc_std:1},
+  {cat:"Compact",          mix_pct:16, mix_std:2, tarifa_mean:42,  tarifa_std:6,  desc_pct:5,  desc_std:1},
+  {cat:"Intermediate",     mix_pct:14, mix_std:2, tarifa_mean:52,  tarifa_std:7,  desc_pct:4,  desc_std:1},
+  {cat:"Full Size",        mix_pct:12, mix_std:2, tarifa_mean:65,  tarifa_std:8,  desc_pct:4,  desc_std:1},
+  {cat:"Premium",          mix_pct:8,  mix_std:2, tarifa_mean:90,  tarifa_std:12, desc_pct:3,  desc_std:1},
+  {cat:"Luxury",           mix_pct:5,  mix_std:1, tarifa_mean:150, tarifa_std:20, desc_pct:2,  desc_std:1},
+  {cat:"Compact SUV",      mix_pct:10, mix_std:2, tarifa_mean:60,  tarifa_std:8,  desc_pct:4,  desc_std:1},
+  {cat:"Intermediate SUV", mix_pct:8,  mix_std:2, tarifa_mean:75,  tarifa_std:10, desc_pct:4,  desc_std:1},
+  {cat:"Full Size SUV",    mix_pct:4,  mix_std:1, tarifa_mean:110, tarifa_std:15, desc_pct:3,  desc_std:1},
+  {cat:"Pickup",           mix_pct:2,  mix_std:1, tarifa_mean:85,  tarifa_std:10, desc_pct:3,  desc_std:1},
+  {cat:"Minivan",          mix_pct:2,  mix_std:1, tarifa_mean:70,  tarifa_std:10, desc_pct:4,  desc_std:1},
+  {cat:"Specialty",        mix_pct:1,  mix_std:1, tarifa_mean:200, tarifa_std:30, desc_pct:2,  desc_std:1},
+];
+
+const DEFAULT_MIX_CORP = [
+  {cat:"Economy",          mix_pct:10, mix_std:2, tarifa_mean:650,  tarifa_std:80,  desc_pct:12, desc_std:2},
+  {cat:"Compact",          mix_pct:12, mix_std:2, tarifa_mean:780,  tarifa_std:90,  desc_pct:12, desc_std:2},
+  {cat:"Intermediate",     mix_pct:15, mix_std:2, tarifa_mean:950,  tarifa_std:100, desc_pct:10, desc_std:2},
+  {cat:"Full Size",        mix_pct:14, mix_std:2, tarifa_mean:1100, tarifa_std:120, desc_pct:10, desc_std:2},
+  {cat:"Premium",          mix_pct:10, mix_std:2, tarifa_mean:1500, tarifa_std:180, desc_pct:8,  desc_std:2},
+  {cat:"Luxury",           mix_pct:5,  mix_std:1, tarifa_mean:2200, tarifa_std:300, desc_pct:5,  desc_std:1},
+  {cat:"Compact SUV",      mix_pct:12, mix_std:2, tarifa_mean:1050, tarifa_std:120, desc_pct:10, desc_std:2},
+  {cat:"Intermediate SUV", mix_pct:10, mix_std:2, tarifa_mean:1250, tarifa_std:150, desc_pct:8,  desc_std:2},
+  {cat:"Full Size SUV",    mix_pct:5,  mix_std:1, tarifa_mean:1600, tarifa_std:200, desc_pct:7,  desc_std:1},
+  {cat:"Pickup",           mix_pct:4,  mix_std:1, tarifa_mean:1200, tarifa_std:150, desc_pct:8,  desc_std:1},
+  {cat:"Minivan",          mix_pct:2,  mix_std:1, tarifa_mean:1100, tarifa_std:130, desc_pct:8,  desc_std:1},
+  {cat:"Specialty",        mix_pct:1,  mix_std:1, tarifa_mean:3000, tarifa_std:400, desc_pct:3,  desc_std:1},
+];
+
+// ─── Parameter groups ──────────────────────────────────────────────
+const GROUPS = [
+  { id:"flota", label:"🚗 Flota", params:{
+    flota_diaria:       {mean:80,   std:0,  min:1,    max:5000,  label:"Flota renta diaria (unidades)",       unit:"u"},
+    flota_corp:         {mean:40,   std:0,  min:0,    max:5000,  label:"Flota contratos corporativos",         unit:"u"},
+    valor_flota_diaria: {mean:18000,std:0,  min:5000, max:200000,label:"Valor promedio auto diaria ($)",       unit:"$"},
+    valor_flota_corp:   {mean:22000,std:0,  min:5000, max:200000,label:"Valor promedio auto corp ($)",         unit:"$"},
+    vida_util:          {mean:4,    std:0,  min:1,    max:10,    label:"Vida útil flota (años)",               unit:"yr"},
+    valor_residual_pct: {mean:35,   std:3,  min:5,    max:70,    label:"Valor residual al cierre (%)",         unit:"%"},
+  }},
+  { id:"diaria", label:"📅 Renta Diaria", params:{
+    ocupacion_diaria:   {mean:72,   std:6,  min:20,   max:98,    label:"Ocupación flota diaria (%)",           unit:"%"},
+  }},
+  { id:"corp", label:"🏢 Corporativa", params:{
+    ocupacion_corp:     {mean:88,   std:4,  min:50,   max:100,   label:"Ocupación flota corporativa (%)",      unit:"%"},
+    plazo_contrato:     {mean:12,   std:2,  min:1,    max:60,    label:"Plazo promedio contrato (meses)",      unit:"m"},
+  }},
+  { id:"costos", label:"🔧 Costos Operativos", params:{
+    mant_diaria_mes:    {mean:180,  std:30, min:0,    max:2000,  label:"Mantenimiento/auto diaria ($/mes)",    unit:"$"},
+    mant_corp_mes:      {mean:150,  std:25, min:0,    max:2000,  label:"Mantenimiento/auto corp ($/mes)",      unit:"$"},
+    seguro_mes:         {mean:120,  std:15, min:30,   max:1000,  label:"Seguro promedio/auto ($/mes)",         unit:"$"},
+    lavado_mes:         {mean:25,   std:5,  min:0,    max:200,   label:"Lavado & limpieza/auto ($/mes)",       unit:"$"},
+    combustible_mes:    {mean:40,   std:8,  min:0,    max:300,   label:"Combustible/auto diaria ($/mes)",      unit:"$"},
+    siniestros_pct:     {mean:3,    std:1,  min:0,    max:15,    label:"Siniestros (% ingresos diaria)",       unit:"%"},
+  }},
+  { id:"rrhh", label:"👥 Personal", params:{
+    agentes_diaria:     {mean:6,    std:0,  min:1,    max:200,   label:"Agentes renta diaria",                 unit:"u"},
+    sueldo_agente:      {mean:900,  std:100,min:300,  max:5000,  label:"Sueldo agente ($/mes)",                unit:"$"},
+    ejecutivos_corp:    {mean:3,    std:0,  min:1,    max:50,    label:"Ejecutivos cuenta corporativa",        unit:"u"},
+    sueldo_ejecutivo:   {mean:1800, std:200,min:500,  max:10000, label:"Sueldo ejecutivo ($/mes)",             unit:"$"},
+    personal_ops:       {mean:8,    std:0,  min:1,    max:200,   label:"Personal operativo",                   unit:"u"},
+    sueldo_ops:         {mean:700,  std:80, min:200,  max:5000,  label:"Sueldo personal ops ($/mes)",          unit:"$"},
+    admin_personal:     {mean:4,    std:0,  min:1,    max:100,   label:"Personal administrativo",              unit:"u"},
+    sueldo_admin:       {mean:1200, std:150,min:300,  max:8000,  label:"Sueldo admin ($/mes)",                 unit:"$"},
+  }},
+  { id:"gastos", label:"🏠 Gastos Fijos", params:{
+    alquiler_oficinas:  {mean:4000, std:500,min:0,    max:50000, label:"Alquiler oficinas/sucursales ($/mes)", unit:"$"},
+    alquiler_parqueo:   {mean:3000, std:400,min:0,    max:30000, label:"Alquiler parqueo flota ($/mes)",       unit:"$"},
+    sistemas_crm:       {mean:1500, std:200,min:0,    max:15000, label:"Sistemas CRM & GPS ($/mes)",           unit:"$"},
+    marketing_mes:      {mean:5000, std:1000,min:0,   max:100000,label:"Marketing & publicidad ($/mes)",       unit:"$"},
+    servicios_basicos:  {mean:2000, std:300,min:0,    max:20000, label:"Servicios básicos ($/mes)",            unit:"$"},
+  }},
+  { id:"fin", label:"💰 Financiero", params:{
+    ir:                 {mean:25,   std:0,  min:0,    max:40,    label:"Impuesto a la renta (%)",              unit:"%"},
+    wacc:               {mean:12,   std:0,  min:5,    max:30,    label:"WACC (%)",                             unit:"%"},
+    deuda_pct:          {mean:60,   std:0,  min:0,    max:100,   label:"Deuda sobre valor flota (%)",          unit:"%"},
+    tasa_deuda:         {mean:9,    std:1,  min:3,    max:20,    label:"Tasa de interés deuda (%)",            unit:"%"},
+  }},
+];
+
+function flatParams(){
+  const p={};
+  GROUPS.forEach(g=>Object.entries(g.params).forEach(([k,v])=>p[k]={...v}));
+  return p;
+}
+
+// ─── Simulation ────────────────────────────────────────────────────
+function simOne(p, mixD, mixC){
+  const flota_d=S(p.flota_diaria), flota_c=S(p.flota_corp);
+  const val_d=S(p.valor_flota_diaria), val_c=S(p.valor_flota_corp);
+  const vida=S(p.vida_util), resid=S(p.valor_residual_pct)/100;
+
+  const ocup_d=S(p.ocupacion_diaria)/100;
+  const {tarifa:tarifa_d, desc:desc_d}=sampleMix(mixD);
+  const rev_diaria=flota_d*365*ocup_d*tarifa_d*(1-desc_d);
+
+  const ocup_c=S(p.ocupacion_corp)/100;
+  const {tarifa:tarifa_c, desc:desc_c}=sampleMix(mixC);
+  const rev_corp=flota_c*12*tarifa_c*(1-desc_c)*ocup_c;
+
+  const rev_total=rev_diaria+rev_corp;
+  const val_total_flota=flota_d*val_d+flota_c*val_c;
+  const dep_anual=val_total_flota*(1-resid)/vida;
+
+  const mant_d=flota_d*S(p.mant_diaria_mes)*12;
+  const mant_c=flota_c*S(p.mant_corp_mes)*12;
+  const seguro=(flota_d+flota_c)*S(p.seguro_mes)*12;
+  const lavado=(flota_d+flota_c)*S(p.lavado_mes)*12;
+  const combust=flota_d*S(p.combustible_mes)*12;
+  const siniestro=rev_diaria*S(p.siniestros_pct)/100;
+  const costo_flota=mant_d+mant_c+seguro+lavado+combust+siniestro;
+
+  const costo_personal=(S(p.agentes_diaria)*S(p.sueldo_agente)+S(p.ejecutivos_corp)*S(p.sueldo_ejecutivo)+S(p.personal_ops)*S(p.sueldo_ops)+S(p.admin_personal)*S(p.sueldo_admin))*12;
+  const gastos_fijos=(S(p.alquiler_oficinas)+S(p.alquiler_parqueo)+S(p.sistemas_crm)+S(p.marketing_mes)+S(p.servicios_basicos))*12;
+
+  const ebitda=rev_total-costo_flota-costo_personal-gastos_fijos;
+  const ebit=ebitda-dep_anual;
+  const deuda=val_total_flota*S(p.deuda_pct)/100;
+  const intereses=deuda*S(p.tasa_deuda)/100;
+  const uai=ebit-intereses;
+  const ir=S(p.ir)/100;
+  const impuesto=Math.max(0,uai*ir);
+  const util_neta=uai-impuesto;
+  const wacc=S(p.wacc)/100;
+  const nopat=ebit*(1-ir);
+  const eva=nopat-val_total_flota*wacc;
+
+  return{rev_total,rev_diaria,rev_corp,ebitda,ebit,util_neta,eva,dep_anual,intereses,impuesto,
+    costo_flota,costo_personal,gastos_fijos,val_total_flota,deuda,nopat,
+    margen_ebitda:rev_total>0?ebitda/rev_total:0,
+    margen_neto:rev_total>0?util_neta/rev_total:0,
+    roic:val_total_flota>0?nopat/val_total_flota:0,
+    rev_por_auto:rev_total/(flota_d+flota_c||1),
+    ocup_d,ocup_c,tarifa_d_net:tarifa_d*(1-desc_d),tarifa_c_net:tarifa_c*(1-desc_c)};
+}
+
+function runSim(params,mixD,mixC,N=3000){
+  const keys=["rev_total","rev_diaria","rev_corp","ebitda","ebit","util_neta","eva","dep_anual",
+    "intereses","impuesto","costo_flota","costo_personal","gastos_fijos","val_total_flota","deuda",
+    "nopat","margen_ebitda","margen_neto","roic","rev_por_auto","ocup_d","ocup_c","tarifa_d_net","tarifa_c_net"];
+  const b={};keys.forEach(k=>b[k]=[]);
+  for(let i=0;i<N;i++){const r=simOne(params,mixD,mixC);keys.forEach(k=>b[k].push(r[k]));}
+  const out={};keys.forEach(k=>out[k]=stats(b[k]));
   return out;
 }
 
-// ─── UI Components ─────────────────────────────────────────────────
-const px = "20px";
+// ─── Components ────────────────────────────────────────────────────
+function Section({title,open,onToggle,children}){
+  return(
+    <div style={{border:`1px solid ${C.border}`,borderRadius:8,marginBottom:10,overflow:"hidden"}}>
+      <button onClick={onToggle} style={{width:"100%",textAlign:"left",padding:"10px 14px",
+        background:open?C.deep:C.card,color:open?"#fff":C.text,border:"none",cursor:"pointer",
+        fontSize:13,fontWeight:700,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        {title}<span style={{fontSize:11,opacity:0.7}}>{open?"▲":"▼"}</span>
+      </button>
+      {open&&<div style={{padding:"12px 14px",background:C.card}}>{children}</div>}
+    </div>
+  );
+}
 
-function Slider({param, pkey, value, onChange}) {
-  const v = value || param;
-  const handleMean = e => onChange(pkey, {...v, mean: parseFloat(e.target.value)});
-  const handleStd  = e => onChange(pkey, {...v, std:  parseFloat(e.target.value)});
-  const range = v.max - v.min;
-  const filled = ((v.mean - v.min) / range * 100).toFixed(1);
+function ParamRow({k,p,val,onChange}){
+  return(
+    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6,padding:"3px 4px",borderRadius:3}}>
+      <label style={{flex:1,fontSize:12,color:C.text}}>{p.label}</label>
+      {["mean","std"].map(f=>(
+        <div key={f} style={{display:"flex",flexDirection:"column",alignItems:"center"}}>
+          <span style={{fontSize:10,color:C.muted,letterSpacing:1,marginBottom:2}}>{f==="mean"?"μ":"σ"}</span>
+          <input type="number" value={val[f]} onChange={e=>onChange(k,f,parseFloat(e.target.value)||0)}
+            style={{width:70,padding:"3px 5px",fontSize:12,fontFamily:mono,
+              border:`1px solid ${C.border}`,borderRadius:3,background:C.light,textAlign:"right"}}/>
+        </div>
+      ))}
+      <span style={{fontSize:11,color:C.muted,width:20,flexShrink:0}}>{p.unit}</span>
+    </div>
+  );
+}
 
-  return (
-    <div style={{marginBottom:18}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:4}}>
-        <span style={{fontSize:12,color: v.lever ? C.text : C.muted}}>
-          {v.lever ? "⚡ " : ""}{v.label}
-        </span>
-        <span style={{fontSize:13,fontWeight:700,color:C.navy,fontFamily:"monospace",minWidth:72,textAlign:"right"}}>
-          {v.unit==="$" ? "$" : ""}{v.mean.toLocaleString()}{v.unit!=="$" ? " "+v.unit : ""}
-        </span>
+function MixTable({mix,setMix,label,tarifaUnit}){
+  const total=mix.reduce((s,c)=>s+c.mix_pct,0);
+  const ok=Math.abs(total-100)<1;
+  const tarifaMed=tarifaMixMedia(mix);
+  const tarifaSd=tarifaMixStd(mix);
+  const descMed=descMixMedio(mix);
+  const tarifaNeta=tarifaMed*(1-descMed/100);
+
+  const upd=(i,field,val)=>setMix(prev=>{const n=[...prev];n[i]={...n[i],[field]:isNaN(val)?0:val};return n;});
+
+  const inp={width:"100%",padding:"2px 4px",fontSize:11,fontFamily:mono,
+    border:`1px solid ${C.border}`,borderRadius:2,background:C.light,textAlign:"right"};
+
+  return(
+    <div style={{marginTop:8}}>
+      {/* Resumen */}
+      <div style={{display:"flex",gap:16,flexWrap:"wrap",marginBottom:10,padding:"10px 14px",
+        background:`${C.green}10`,borderRadius:6,border:`1px solid ${C.green}30`}}>
+        <div>
+          <div style={{fontSize:10,color:C.muted}}>{tarifaUnit} ponderada μ</div>
+          <div style={{fontSize:18,fontWeight:700,color:C.green,fontFamily:mono}}>{tarifaUnit==="Tarifa diaria"?"$"+fmtF(tarifaMed.toFixed(2)):("$"+fmtF(Math.round(tarifaMed)))}</div>
+        </div>
+        <div>
+          <div style={{fontSize:10,color:C.muted}}>Desviación σ</div>
+          <div style={{fontSize:18,fontWeight:700,color:C.blue,fontFamily:mono}}>±${fmtF(Math.round(tarifaSd))}</div>
+        </div>
+        <div>
+          <div style={{fontSize:10,color:C.muted}}>Desc. ponderado μ</div>
+          <div style={{fontSize:18,fontWeight:700,color:descMed>8?C.red:descMed>5?C.orange:C.teal,fontFamily:mono}}>{descMed.toFixed(1)}%</div>
+        </div>
+        <div>
+          <div style={{fontSize:10,color:C.muted}}>Tarifa neta μ (post-desc)</div>
+          <div style={{fontSize:18,fontWeight:700,color:C.deep,fontFamily:mono}}>${tarifaUnit==="Tarifa diaria"?tarifaNeta.toFixed(2):fmtF(Math.round(tarifaNeta))}</div>
+        </div>
+        <div style={{marginLeft:"auto",display:"flex",alignItems:"center"}}>
+          <span style={{fontSize:12,fontWeight:700,padding:"4px 10px",borderRadius:4,
+            background:ok?"#1A5C3820":"#B3404020",color:ok?C.green:C.red,
+            border:`1px solid ${ok?C.green:C.red}50`}}>
+            Σ mix = {total.toFixed(1)}% {ok?"✓":"⚠ debe ser 100%"}
+          </span>
+        </div>
       </div>
-      <input type="range" min={v.min} max={v.max}
-        step={v.max > 1000 ? 100 : v.max > 100 ? 10 : v.max > 10 ? 0.5 : 0.1}
-        value={v.mean} onChange={handleMean}
-        style={{width:"100%", accentColor: v.lever ? C.navy : C.muted, height:4}}
-      />
-      <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:C.muted,marginTop:2}}>
-        <span>{v.min}{v.unit==="$"?"":" "+v.unit}</span>
-        <span style={{color:C.muted,fontSize:10}}>σ: <input type="number" value={v.std} min={0} max={v.max/2}
-          onChange={handleStd}
-          style={{width:44,border:"none",borderBottom:`1px solid ${C.border}`,background:"transparent",fontSize:10,color:C.muted,textAlign:"center"}}
-        /></span>
-        <span>{v.max}{v.unit==="$"?"":" "+v.unit}</span>
+
+      {/* Tabla */}
+      <div style={{overflowX:"auto"}}>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+          <thead>
+            <tr style={{background:C.deep,color:"#fff"}}>
+              {["Categoría","% Mix μ","% Mix σ","Tarifa μ ($)","Tarifa σ ($)","Desc % μ","Desc % σ","Tarifa Neta μ"].map(h=>(
+                <th key={h} style={{padding:"6px 8px",textAlign:"left",fontFamily:mono,fontWeight:600,whiteSpace:"nowrap"}}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {mix.map((c,i)=>{
+              const w=c.mix_pct/(total||1);
+              const dp=c.desc_pct||0;
+              const neta=c.tarifa_mean*(1-dp/100);
+              return(
+                <tr key={i} style={{background:i%2===0?C.light:C.card,borderBottom:`1px solid ${C.border}`}}>
+                  <td style={{padding:"4px 8px"}}>
+                    <input value={c.cat} onChange={e=>upd(i,"cat",e.target.value)}
+                      style={{width:"100%",border:"none",background:"transparent",fontSize:11,fontFamily:mono,color:C.text}}/>
+                  </td>
+                  <td style={{padding:"3px 4px"}}><input type="number" value={c.mix_pct} onChange={e=>upd(i,"mix_pct",parseFloat(e.target.value))} style={inp}/></td>
+                  <td style={{padding:"3px 4px"}}><input type="number" value={c.mix_std} onChange={e=>upd(i,"mix_std",parseFloat(e.target.value))} style={inp}/></td>
+                  <td style={{padding:"3px 4px"}}><input type="number" value={c.tarifa_mean} onChange={e=>upd(i,"tarifa_mean",parseFloat(e.target.value))} style={inp}/></td>
+                  <td style={{padding:"3px 4px"}}><input type="number" value={c.tarifa_std} onChange={e=>upd(i,"tarifa_std",parseFloat(e.target.value))} style={inp}/></td>
+                  <td style={{padding:"3px 4px"}}>
+                    <input type="number" value={dp} min={0} max={30} step={0.5} onChange={e=>upd(i,"desc_pct",parseFloat(e.target.value))}
+                      style={{...inp,border:`1px solid ${dp>10?C.red:dp>7?C.orange:C.border}`,color:dp>10?C.red:dp>7?C.orange:C.text}}/>
+                  </td>
+                  <td style={{padding:"3px 4px"}}><input type="number" value={c.desc_std||0} min={0} max={5} step={0.25} onChange={e=>upd(i,"desc_std",parseFloat(e.target.value))} style={inp}/></td>
+                  <td style={{padding:"4px 8px",fontFamily:mono,textAlign:"right"}}>
+                    <span style={{color:C.deep,fontWeight:600}}>${fmtF(Math.round(neta))}</span>
+                    <span style={{color:dp>10?C.red:C.muted,fontSize:10,marginLeft:4}}>−{dp.toFixed(1)}% ({(w*100).toFixed(1)}%)</span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
 }
 
-function KpiCard({label, val, p10, p90, color, sub, icon}) {
-  const positive = val >= 0;
-  return (
-    <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"14px 16px",borderTop:`3px solid ${color||C.navy}`}}>
+function KpiCard({label,val,p10,p90,color,sub,icon}){
+  return(
+    <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:10,padding:"14px 16px",borderTop:`3px solid ${color||C.deep}`}}>
       <div style={{fontSize:10,color:C.muted,textTransform:"uppercase",letterSpacing:1}}>{icon} {label}</div>
-      <div style={{fontSize:20,fontWeight:800,color:positive?(color||C.navy):C.red,fontFamily:"monospace",margin:"5px 0 3px"}}>{val}</div>
+      <div style={{fontSize:20,fontWeight:800,color:color||C.deep,fontFamily:mono,margin:"5px 0 3px"}}>{val}</div>
       <div style={{fontSize:10,color:C.muted}}>P10 {p10} · P90 {p90}</div>
-      {sub && <div style={{fontSize:10,color:C.orange,marginTop:4}}>{sub}</div>}
+      {sub&&<div style={{fontSize:10,color:C.orange,marginTop:4}}>{sub}</div>}
     </div>
   );
 }
 
-const GROUPS = [
-  {id:"flota",  label:"Flota",        icon:"🚗"},
-  {id:"diaria", label:"Renta Diaria", icon:"📅"},
-  {id:"corp",   label:"Corporativa",  icon:"🏢"},
-  {id:"costos", label:"Costos Op.",   icon:"🔧"},
-  {id:"rrhh",   label:"Personal",     icon:"👥"},
-  {id:"gastos", label:"Gastos Fijos", icon:"🏠"},
-  {id:"fin",    label:"Financiero",   icon:"💰"},
+const TABS=[
+  {id:"params",    label:"📋 Supuestos"},
+  {id:"resultados",label:"📊 Resultados"},
+  {id:"waterfall", label:"💧 Cascada P&L"},
+  {id:"tornado",   label:"🌪️ Tornado"},
 ];
 
-const TABS = ["params","resultados","waterfall","tornado"];
+export default function SimuladorRentaAutos(){
+  const [params,setParams]=useState(flatParams);
+  const [mixDiaria,setMixDiaria]=useState(DEFAULT_MIX_DIARIA);
+  const [mixCorp,setMixCorp]=useState(DEFAULT_MIX_CORP);
+  const [openSec,setOpenSec]=useState({flota:true,diaria:true});
+  const [activeTab,setActiveTab]=useState("params");
+  const [S_,setS_]=useState(null);
+  const [running,setRunning]=useState(false);
+  const [N,setN]=useState(3000);
+  const paramsRef=useRef(params);
+  const mixDRef=useRef(mixDiaria);
+  const mixCRef=useRef(mixCorp);
 
-export default function SimuladorRentaAutos() {
-  const initParams = () => {
-    const p = {};
-    Object.entries(PD).forEach(([k,v]) => p[k] = {...v});
-    return p;
-  };
-  const [params, setParams] = useState(initParams);
-  const [activeGroup, setActiveGroup] = useState("flota");
-  const [activeTab, setActiveTab] = useState("params");
-  const [S_, setS_] = useState(null);
-  const [running, setRunning] = useState(false);
-  const [N, setN] = useState(3000);
-  const paramsRef = useRef(params);
+  const handleChange=useCallback((k,field,val)=>{
+    setParams(prev=>{const n={...prev,[k]:{...prev[k],[field]:val}};paramsRef.current=n;return n;});
+  },[]);
 
-  const handleChange = useCallback((k, v) => {
-    setParams(prev => { const n={...prev,[k]:v}; paramsRef.current=n; return n; });
-  }, []);
+  const handleMixD=useCallback(fn=>{setMixDiaria(prev=>{const n=typeof fn==="function"?fn(prev):fn;mixDRef.current=n;return n;});},[]);
+  const handleMixC=useCallback(fn=>{setMixCorp(prev=>{const n=typeof fn==="function"?fn(prev):fn;mixCRef.current=n;return n;});},[]);
 
-  const handleRun = useCallback(() => {
+  const toggleSec=id=>setOpenSec(prev=>({...prev,[id]:!prev[id]}));
+
+  const handleRun=useCallback(()=>{
     setRunning(true);
-    setTimeout(() => {
-      const result = runSim(paramsRef.current, N);
-      setS_(result);
+    setTimeout(()=>{
+      setS_(runSim(paramsRef.current,mixDRef.current,mixCRef.current,N));
       setRunning(false);
       setActiveTab("resultados");
-    }, 30);
-  }, [N]);
+    },30);
+  },[N]);
 
-  const isMobile = typeof window !== "undefined" && window.innerWidth < 700;
+  const resetSigma=()=>{
+    const z={};Object.entries(paramsRef.current).forEach(([k,v])=>z[k]={...v,std:0});
+    setParams(z);paramsRef.current=z;
+  };
 
-  const tabLabel = {params:"⚙️ Parámetros", resultados:"📊 Resultados", waterfall:"💧 Cascada P&L", tornado:"🌪️ Tornado"};
+  return(
+    <div style={{fontFamily:sans,background:C.light,minHeight:"100vh",color:C.text}}>
 
-  return (
-    <div style={{fontFamily:"'Segoe UI',system-ui,sans-serif",background:C.light,minHeight:"100vh",color:C.text}}>
-
-      {/* ── HEADER ── */}
-      <div style={{background:C.deep,color:"#fff",padding:`12px ${px}`,display:"flex",alignItems:"center",justifyContent:"space-between",borderBottom:`3px solid ${C.gold}`,flexWrap:"wrap",gap:8}}>
+      {/* HEADER */}
+      <div style={{background:C.deep,color:"#fff",padding:"12px 20px",display:"flex",alignItems:"center",
+        justifyContent:"space-between",borderBottom:`3px solid ${C.gold}`,flexWrap:"wrap",gap:8}}>
         <div>
           <div style={{fontSize:10,letterSpacing:3,textTransform:"uppercase",color:C.gold,fontWeight:600}}>PROMUNDIAL CONSULTING GROUP</div>
-          <div style={{fontSize:18,fontWeight:800,letterSpacing:0.5}}>🚗 Simulador Monte Carlo · Renta de Autos</div>
-          <div style={{fontSize:11,color:"#9ab8cc",marginTop:1}}>Modelo mixto: Renta Diaria + Corporativa · N={N.toLocaleString()} iter.</div>
+          <div style={{fontSize:17,fontWeight:800}}>🚗 Simulador Monte Carlo · Renta de Autos</div>
+          <div style={{fontSize:11,color:"#9ab8a0",marginTop:1}}>Modelo mixto: Diaria + Corporativa · 12 categorías · N={N.toLocaleString()} iter.</div>
         </div>
         <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+          <button onClick={resetSigma}
+            style={{background:"transparent",color:C.gold,border:`1.5px solid ${C.gold}`,padding:"7px 12px",borderRadius:6,fontSize:11,cursor:"pointer",fontWeight:600}}>
+            σ = 0
+          </button>
           <select value={N} onChange={e=>setN(+e.target.value)}
-            style={{background:"#1a3a55",color:C.gold,border:`1px solid ${C.gold}55`,borderRadius:6,padding:"6px 10px",fontSize:12,cursor:"pointer"}}>
+            style={{background:"#1a3a2a",color:C.gold,border:`1px solid ${C.gold}55`,borderRadius:6,padding:"6px 10px",fontSize:12,cursor:"pointer"}}>
             {[1000,3000,5000,10000].map(n=><option key={n} value={n}>{n.toLocaleString()} iter.</option>)}
           </select>
           <button onClick={handleRun} disabled={running}
             style={{background:running?"#555":C.gold,color:"#fff",border:"none",padding:"9px 22px",borderRadius:6,fontWeight:700,fontSize:13,cursor:running?"not-allowed":"pointer"}}>
-            {running ? "⏳ Simulando..." : "▶ Correr Simulación"}
+            {running?"⏳ Simulando...":"▶ Simular"}
           </button>
         </div>
       </div>
 
-      {/* ── TABS ── */}
-      <div style={{display:"flex",background:C.card,borderBottom:`1px solid ${C.border}`,padding:`0 ${px}`,overflowX:"auto"}}>
+      {/* TABS */}
+      <div style={{display:"flex",background:C.card,borderBottom:`1px solid ${C.border}`,padding:"0 20px",overflowX:"auto"}}>
         {TABS.map(t=>(
-          <button key={t} onClick={()=>setActiveTab(t)}
-            style={{padding:"11px 18px",border:"none",background:"transparent",cursor:"pointer",fontSize:13,fontWeight:activeTab===t?700:400,
-              color:activeTab===t?C.navy:C.muted,borderBottom:activeTab===t?`2px solid ${C.navy}`:"2px solid transparent",whiteSpace:"nowrap"}}>
-            {tabLabel[t]}
+          <button key={t.id} onClick={()=>setActiveTab(t.id)}
+            style={{padding:"11px 16px",border:"none",background:"transparent",cursor:"pointer",fontSize:13,
+              fontWeight:activeTab===t.id?700:400,color:activeTab===t.id?C.deep:C.muted,
+              borderBottom:activeTab===t.id?`2px solid ${C.deep}`:"2px solid transparent",whiteSpace:"nowrap"}}>
+            {t.label}
           </button>
         ))}
       </div>
 
-      <div style={{padding:`16px ${px}`,maxWidth:1200,margin:"0 auto"}}>
+      <div style={{padding:"16px 20px",maxWidth:1200,margin:"0 auto"}}>
 
-        {/* ══ PARÁMETROS ══ */}
-        {activeTab==="params" && (
-          <div style={{display:"grid",gridTemplateColumns:isMobile?"1fr":"200px 1fr",gap:14,alignItems:"start"}}>
-            <div>
-              <div style={{fontSize:10,color:C.muted,textTransform:"uppercase",letterSpacing:1,marginBottom:8,fontWeight:600}}>Módulo</div>
-              {GROUPS.map(g=>(
-                <button key={g.id} onClick={()=>setActiveGroup(g.id)}
-                  style={{display:"block",width:"100%",textAlign:"left",padding:"8px 12px",marginBottom:4,borderRadius:7,border:"none",cursor:"pointer",
-                    background:activeGroup===g.id?C.navy:C.card,color:activeGroup===g.id?"#fff":C.text,
-                    fontWeight:activeGroup===g.id?700:400,fontSize:13}}>
-                  {g.icon} {g.label}
-                </button>
+        {/* ══ SUPUESTOS ══ */}
+        {activeTab==="params"&&(
+          <div>
+            <div style={{fontSize:11,color:C.muted,marginBottom:12}}>
+              μ = valor base · σ = desviación estándar (0 = determinístico). Las tarifas se calculan desde el mix de categorías.
+            </div>
+
+            {/* Flota */}
+            <Section title="🚗 Flota" open={!!openSec.flota} onToggle={()=>toggleSec("flota")}>
+              {Object.entries(GROUPS.find(g=>g.id==="flota").params).map(([k,v])=>(
+                <ParamRow key={k} k={k} p={v} val={params[k]||v} onChange={handleChange}/>
               ))}
-              <div style={{marginTop:10,padding:"10px 12px",background:C.card,borderRadius:8,border:`1px solid ${C.border}`}}>
-                <div style={{fontSize:10,color:C.muted,marginBottom:6}}>⚡ = KPI palanca</div>
-                <button onClick={()=>{
-                  const z={};Object.entries(paramsRef.current).forEach(([k,v])=>{z[k]={...v,std:0};});
-                  setParams(z);paramsRef.current=z;
-                }} style={{width:"100%",padding:"6px 0",background:C.border,border:"none",borderRadius:5,fontSize:11,cursor:"pointer",color:C.muted}}>
-                  σ = 0 (determinístico)
-                </button>
+            </Section>
+
+            {/* Mix Diaria */}
+            <Section title="📅 Renta Diaria — Mix de Categorías & Tarifas ($/día)" open={!!openSec.diaria} onToggle={()=>toggleSec("diaria")}>
+              <ParamRow k="ocupacion_diaria" p={GROUPS.find(g=>g.id==="diaria").params.ocupacion_diaria}
+                val={params.ocupacion_diaria} onChange={handleChange}/>
+              <div style={{fontSize:11,color:C.muted,margin:"10px 0 4px"}}>
+                Define el mix de flota y la tarifa por categoría. La tarifa ponderada se usa en la simulación.
               </div>
-            </div>
-            <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"18px 20px"}}>
-              {GROUPS.filter(g=>g.id===activeGroup).map(g=>(
-                <div key={g.id}>
-                  <div style={{fontSize:15,fontWeight:700,color:C.navy,marginBottom:16}}>{g.icon} {g.label}</div>
-                  {Object.entries(PD).filter(([,v])=>v.group===g.id).map(([k,v])=>(
-                    <Slider key={k} param={v} pkey={k} value={params[k]} onChange={handleChange}/>
-                  ))}
-                </div>
+              <MixTable mix={mixDiaria} setMix={handleMixD} label="Renta Diaria" tarifaUnit="Tarifa diaria"/>
+            </Section>
+
+            {/* Mix Corporativa */}
+            <Section title="🏢 Corporativa — Mix de Categorías & Tarifas ($/mes)" open={!!openSec.corp} onToggle={()=>toggleSec("corp")}>
+              {Object.entries(GROUPS.find(g=>g.id==="corp").params).map(([k,v])=>(
+                <ParamRow key={k} k={k} p={v} val={params[k]||v} onChange={handleChange}/>
               ))}
-            </div>
+              <div style={{fontSize:11,color:C.muted,margin:"10px 0 4px"}}>
+                Define el mix de flota corporativa y la tarifa mensual por categoría.
+              </div>
+              <MixTable mix={mixCorp} setMix={handleMixC} label="Corporativa" tarifaUnit="Tarifa mensual"/>
+            </Section>
+
+            {/* Resto de grupos */}
+            {GROUPS.filter(g=>!["flota","diaria","corp"].includes(g.id)).map(g=>(
+              <Section key={g.id} title={g.label} open={!!openSec[g.id]} onToggle={()=>toggleSec(g.id)}>
+                {Object.entries(g.params).map(([k,v])=>(
+                  <ParamRow key={k} k={k} p={v} val={params[k]||v} onChange={handleChange}/>
+                ))}
+              </Section>
+            ))}
           </div>
         )}
 
         {/* ══ RESULTADOS ══ */}
-        {activeTab==="resultados" && S_ && (
+        {activeTab==="resultados"&&S_&&(
           <div>
-            {/* Resumen flota */}
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:10,marginBottom:16}}>
-              <KpiCard label="Revenue Total" icon="💰"
-                val={fmt$(S_.rev_total.p50)} p10={fmt$(S_.rev_total.p10)} p90={fmt$(S_.rev_total.p90)} color={C.blue}/>
-              <KpiCard label="EBITDA" icon="📈"
-                val={fmt$(S_.ebitda.p50)} p10={fmt$(S_.ebitda.p10)} p90={fmt$(S_.ebitda.p90)} color={C.teal}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(155px,1fr))",gap:10,marginBottom:16}}>
+              <KpiCard label="Revenue Total" icon="💰" val={fmt$(S_.rev_total.p50)} p10={fmt$(S_.rev_total.p10)} p90={fmt$(S_.rev_total.p90)} color={C.blue}/>
+              <KpiCard label="EBITDA" icon="📈" val={fmt$(S_.ebitda.p50)} p10={fmt$(S_.ebitda.p10)} p90={fmt$(S_.ebitda.p90)} color={C.teal}
                 sub={`Margen: ${pct(S_.margen_ebitda.p50)}`}/>
-              <KpiCard label="Utilidad Neta" icon="🏆"
-                val={fmt$(S_.util_neta.p50)} p10={fmt$(S_.util_neta.p10)} p90={fmt$(S_.util_neta.p90)}
-                color={S_.util_neta.p50>=0?C.green:C.red}
-                sub={`Margen neto: ${pct(S_.margen_neto.p50)}`}/>
-              <KpiCard label="EVA" icon="⚡"
-                val={fmt$(S_.eva.p50)} p10={fmt$(S_.eva.p10)} p90={fmt$(S_.eva.p90)}
-                color={S_.eva.p50>=0?C.green:C.red}
-                sub={S_.eva.p50>=0?"Valor creado ✓":"Valor destruido ✗"}/>
-              <KpiCard label="Rev. Diaria" icon="📅"
-                val={fmt$(S_.rev_diaria.p50)} p10={fmt$(S_.rev_diaria.p10)} p90={fmt$(S_.rev_diaria.p90)} color={C.navy}/>
-              <KpiCard label="Rev. Corporativa" icon="🏢"
-                val={fmt$(S_.rev_corp.p50)} p10={fmt$(S_.rev_corp.p10)} p90={fmt$(S_.rev_corp.p90)} color={C.blue}/>
-              <KpiCard label="Rev./Auto/Año" icon="🚗"
-                val={fmt$(S_.rev_por_auto.p50)} p10={fmt$(S_.rev_por_auto.p10)} p90={fmt$(S_.rev_por_auto.p90)} color={C.orange}/>
-              <KpiCard label="ROIC" icon="📐"
-                val={pct(S_.roic.p50)} p10={pct(S_.roic.p10)} p90={pct(S_.roic.p90)}
-                color={S_.roic.p50 > params.wacc.mean/100 ? C.green : C.red}
-                sub={`WACC: ${params.wacc.mean}%`}/>
+              <KpiCard label="Utilidad Neta" icon="🏆" val={fmt$(S_.util_neta.p50)} p10={fmt$(S_.util_neta.p10)} p90={fmt$(S_.util_neta.p90)}
+                color={S_.util_neta.p50>=0?C.green:C.red} sub={`Margen neto: ${pct(S_.margen_neto.p50)}`}/>
+              <KpiCard label="EVA" icon="⚡" val={fmt$(S_.eva.p50)} p10={fmt$(S_.eva.p10)} p90={fmt$(S_.eva.p90)}
+                color={S_.eva.p50>=0?C.green:C.red} sub={S_.eva.p50>=0?"Valor creado ✓":"Valor destruido ✗"}/>
+              <KpiCard label="Rev. Diaria" icon="📅" val={fmt$(S_.rev_diaria.p50)} p10={fmt$(S_.rev_diaria.p10)} p90={fmt$(S_.rev_diaria.p90)} color={C.deep}/>
+              <KpiCard label="Rev. Corporativa" icon="🏢" val={fmt$(S_.rev_corp.p50)} p10={fmt$(S_.rev_corp.p10)} p90={fmt$(S_.rev_corp.p90)} color={C.navy}/>
+              <KpiCard label="Tarifa Diaria Neta" icon="💵" val={"$"+S_.tarifa_d_net.p50.toFixed(2)+"/día"} p10={"$"+S_.tarifa_d_net.p10.toFixed(2)} p90={"$"+S_.tarifa_d_net.p90.toFixed(2)} color={C.orange}/>
+              <KpiCard label="Tarifa Corp. Neta" icon="🏢" val={fmt$(S_.tarifa_c_net.p50)+"/mes"} p10={fmt$(S_.tarifa_c_net.p10)} p90={fmt$(S_.tarifa_c_net.p90)} color={C.blue}/>
+              <KpiCard label="ROIC" icon="📐" val={pct(S_.roic.p50)} p10={pct(S_.roic.p10)} p90={pct(S_.roic.p90)}
+                color={S_.roic.p50>params.wacc.mean/100?C.green:C.red} sub={`WACC: ${params.wacc.mean}%`}/>
             </div>
 
-            {/* Desglose de costos */}
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:14}}>
               <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"18px 20px"}}>
-                <div style={{fontSize:13,fontWeight:700,color:C.navy,marginBottom:14}}>📊 Estructura de Costos (P50 anual)</div>
-                {[
-                  ["Costos flota (mant+seguro+siniestros)", S_.costo_flota.p50, C.orange],
-                  ["Personal", S_.costo_personal.p50, C.blue],
-                  ["Gastos fijos", S_.gastos_fijos.p50, C.muted],
-                  ["Depreciación", S_.dep_anual.p50, C.teal],
-                  ["Intereses", S_.intereses.p50, C.red],
-                  ["Impuestos", S_.impuesto.p50, "#7A5A2A"],
-                ].map(([label, val, color])=>(
-                  <div key={label} style={{marginBottom:10}}>
+                <div style={{fontSize:13,fontWeight:700,color:C.deep,marginBottom:14}}>📊 Estructura de Costos (P50 anual)</div>
+                {[["Costos flota",S_.costo_flota.p50,C.orange],["Personal",S_.costo_personal.p50,C.blue],
+                  ["Gastos fijos",S_.gastos_fijos.p50,C.muted],["Depreciación",S_.dep_anual.p50,C.teal],
+                  ["Intereses",S_.intereses.p50,C.red],["Impuestos",S_.impuesto.p50,"#7A5A2A"]].map(([l,v,col])=>(
+                  <div key={l} style={{marginBottom:10}}>
                     <div style={{display:"flex",justifyContent:"space-between",fontSize:12,marginBottom:3}}>
-                      <span style={{color:C.muted}}>{label}</span>
-                      <span style={{fontFamily:"monospace",fontWeight:600,color}}>{fmt$(val)}</span>
+                      <span style={{color:C.muted}}>{l}</span>
+                      <span style={{fontFamily:mono,fontWeight:600,color:col}}>{fmt$(v)}</span>
                     </div>
                     <div style={{background:C.light,borderRadius:3,height:6,overflow:"hidden"}}>
-                      <div style={{width:`${Math.min(100,(val/S_.rev_total.p50)*100)}%`,height:"100%",background:color,borderRadius:3}}/>
+                      <div style={{width:`${Math.min(100,(v/Math.max(S_.rev_total.p50,1))*100)}%`,height:"100%",background:col,borderRadius:3}}/>
                     </div>
                   </div>
                 ))}
               </div>
 
               <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"18px 20px"}}>
-                <div style={{fontSize:13,fontWeight:700,color:C.navy,marginBottom:14}}>🚗 Indicadores de Flota</div>
+                <div style={{fontSize:13,fontWeight:700,color:C.deep,marginBottom:14}}>🚗 Indicadores Clave</div>
                 {[
-                  ["Ocupación diaria (P50)", pct(S_.ocup_d.p50), pct(S_.ocup_d.p10), pct(S_.ocup_d.p90), C.blue],
-                  ["Ocupación corporativa (P50)", pct(S_.ocup_c.p50), pct(S_.ocup_c.p10), pct(S_.ocup_c.p90), C.teal],
-                  ["Valor flota total", fmt$(S_.val_total_flota.p50), "—","—", C.navy],
-                  ["Deuda sobre flota", fmt$(S_.deuda.p50), "—","—", C.red],
-                  ["NOPAT", fmt$(S_.nopat.p50), fmt$(S_.nopat.p10), fmt$(S_.nopat.p90), C.green],
-                ].map(([label,v,lo,hi,color])=>(
-                  <div key={label} style={{padding:"10px 0",borderBottom:`1px solid ${C.border}`}}>
+                  ["Ocupación diaria (P50)",pct(S_.ocup_d.p50),pct(S_.ocup_d.p10),pct(S_.ocup_d.p90),C.blue],
+                  ["Ocupación corporativa (P50)",pct(S_.ocup_c.p50),pct(S_.ocup_c.p10),pct(S_.ocup_c.p90),C.teal],
+                  ["Rev./auto/año",fmt$(S_.rev_por_auto.p50),fmt$(S_.rev_por_auto.p10),fmt$(S_.rev_por_auto.p90),C.orange],
+                  ["Valor flota total",fmt$(S_.val_total_flota.p50),"—","—",C.deep],
+                  ["NOPAT",fmt$(S_.nopat.p50),fmt$(S_.nopat.p10),fmt$(S_.nopat.p90),C.green],
+                ].map(([l,v,lo,hi,col])=>(
+                  <div key={l} style={{padding:"10px 0",borderBottom:`1px solid ${C.border}`}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                      <span style={{fontSize:12,color:C.muted}}>{label}</span>
+                      <span style={{fontSize:12,color:C.muted}}>{l}</span>
                       <div style={{textAlign:"right"}}>
-                        <div style={{fontFamily:"monospace",fontWeight:700,color,fontSize:14}}>{v}</div>
+                        <div style={{fontFamily:mono,fontWeight:700,color:col,fontSize:14}}>{v}</div>
                         {lo!=="—"&&<div style={{fontSize:10,color:C.muted}}>P10 {lo} · P90 {hi}</div>}
                       </div>
                     </div>
@@ -454,36 +514,34 @@ export default function SimuladorRentaAutos() {
         )}
 
         {/* ══ WATERFALL ══ */}
-        {activeTab==="waterfall" && S_ && (
+        {activeTab==="waterfall"&&S_&&(
           <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"20px 24px"}}>
-            <div style={{fontSize:14,fontWeight:700,color:C.navy,marginBottom:20}}>💧 Cascada P&L — Valores P50 anuales</div>
+            <div style={{fontSize:14,fontWeight:700,color:C.deep,marginBottom:20}}>💧 Cascada P&L — Valores P50 anuales</div>
             {[
-              {label:"Revenue Renta Diaria",   val: S_.rev_diaria.p50,      type:"pos", cumul: S_.rev_diaria.p50},
-              {label:"Revenue Corporativa",     val: S_.rev_corp.p50,        type:"pos", cumul: S_.rev_total.p50},
-              {label:"− Costos de Flota",       val: -S_.costo_flota.p50,   type:"neg", cumul: S_.rev_total.p50 - S_.costo_flota.p50},
-              {label:"− Personal",              val: -S_.costo_personal.p50, type:"neg", cumul: S_.rev_total.p50 - S_.costo_flota.p50 - S_.costo_personal.p50},
-              {label:"− Gastos Fijos",          val: -S_.gastos_fijos.p50,  type:"neg", cumul: S_.ebitda.p50},
-              {label:"= EBITDA",                val: S_.ebitda.p50,          type:"total"},
-              {label:"− Depreciación",          val: -S_.dep_anual.p50,     type:"neg", cumul: S_.ebit.p50},
-              {label:"= EBIT",                  val: S_.ebit.p50,            type:"total"},
-              {label:"− Intereses",             val: -S_.intereses.p50,     type:"neg"},
-              {label:"− Impuestos",             val: -S_.impuesto.p50,      type:"neg"},
-              {label:"= Utilidad Neta",         val: S_.util_neta.p50,       type:"total"},
+              {label:"Revenue Renta Diaria",  val:S_.rev_diaria.p50,      type:"pos"},
+              {label:"Revenue Corporativa",    val:S_.rev_corp.p50,        type:"pos"},
+              {label:"− Costos de Flota",      val:-S_.costo_flota.p50,   type:"neg"},
+              {label:"− Personal",             val:-S_.costo_personal.p50, type:"neg"},
+              {label:"− Gastos Fijos",         val:-S_.gastos_fijos.p50,  type:"neg"},
+              {label:"= EBITDA",               val:S_.ebitda.p50,          type:"total"},
+              {label:"− Depreciación",         val:-S_.dep_anual.p50,     type:"neg"},
+              {label:"= EBIT",                 val:S_.ebit.p50,            type:"total"},
+              {label:"− Intereses",            val:-S_.intereses.p50,     type:"neg"},
+              {label:"− Impuestos",            val:-S_.impuesto.p50,      type:"neg"},
+              {label:"= Utilidad Neta",        val:S_.util_neta.p50,       type:"total"},
             ].map(({label,val,type})=>{
-              const isTotal = type==="total";
-              const isNeg   = type==="neg";
-              const barColor = isTotal ? C.navy : isNeg ? C.red : C.teal;
-              const maxVal = S_.rev_total.p50;
-              const barW = Math.min(100, Math.abs(val)/Math.max(maxVal,1)*100);
-              return (
-                <div key={label} style={{display:"flex",alignItems:"center",gap:10,marginBottom:isTotal?16:8,
-                  paddingTop:isTotal?12:0,borderTop:isTotal?`1px solid ${C.border}`:"none"}}>
-                  <div style={{width:220,fontSize:isTotal?13:12,fontWeight:isTotal?700:400,color:isTotal?C.navy:C.muted,flexShrink:0}}>{label}</div>
-                  <div style={{flex:1,background:C.light,borderRadius:4,height:isTotal?18:12,overflow:"hidden"}}>
-                    <div style={{width:`${barW}%`,height:"100%",background:barColor,borderRadius:4,opacity:isTotal?1:0.8}}/>
+              const isT=type==="total",isN=type==="neg";
+              const col=isT?C.deep:isN?C.red:C.teal;
+              const barW=Math.min(100,Math.abs(val)/Math.max(S_.rev_total.p50,1)*100);
+              return(
+                <div key={label} style={{display:"flex",alignItems:"center",gap:10,marginBottom:isT?16:8,
+                  paddingTop:isT?12:0,borderTop:isT?`1px solid ${C.border}`:"none"}}>
+                  <div style={{width:220,fontSize:isT?13:12,fontWeight:isT?700:400,color:isT?C.deep:C.muted,flexShrink:0}}>{label}</div>
+                  <div style={{flex:1,background:C.light,borderRadius:4,height:isT?18:12,overflow:"hidden"}}>
+                    <div style={{width:`${barW}%`,height:"100%",background:col,borderRadius:4,opacity:isT?1:0.75}}/>
                   </div>
-                  <div style={{width:100,textAlign:"right",fontFamily:"monospace",fontSize:isTotal?14:12,fontWeight:isTotal?800:500,
-                    color:val>=0?barColor:C.red,flexShrink:0}}>{fmt$(val)}</div>
+                  <div style={{width:100,textAlign:"right",fontFamily:mono,fontSize:isT?14:12,
+                    fontWeight:isT?800:500,color:val>=0?col:C.red,flexShrink:0}}>{fmt$(val)}</div>
                 </div>
               );
             })}
@@ -491,51 +549,46 @@ export default function SimuladorRentaAutos() {
         )}
 
         {/* ══ TORNADO ══ */}
-        {activeTab==="tornado" && S_ && (
+        {activeTab==="tornado"&&S_&&(
           <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"20px 24px"}}>
-            <div style={{fontSize:14,fontWeight:700,color:C.navy,marginBottom:6}}>🌪️ Análisis de Sensibilidad — Impacto en EVA</div>
-            <div style={{fontSize:11,color:C.muted,marginBottom:16}}>Variables ordenadas por impacto en EVA (P90 − P10)</div>
-            {(() => {
-              const levers = Object.entries(PD).filter(([,v])=>v.lever && v.std>0);
-              const impacts = levers.map(([k,v])=>{
-                const base = S_.eva;
-                return {
-                  label: v.label,
-                  impact: Math.abs(base.p90 - base.p10),
-                  dir: v.dir || 1,
-                };
-              }).sort((a,b)=>b.impact-a.impact).slice(0,10);
-              const maxImpact = impacts[0]?.impact || 1;
-              return impacts.map(({label,impact,dir},i)=>(
+            <div style={{fontSize:14,fontWeight:700,color:C.deep,marginBottom:6}}>🌪️ Sensibilidad — Rango P10/P90 en EVA</div>
+            <div style={{fontSize:11,color:C.muted,marginBottom:16}}>Variables con σ &gt; 0, ordenadas por impacto</div>
+            {(()=>{
+              const items=[];
+              GROUPS.forEach(g=>Object.entries(g.params).forEach(([k,v])=>{
+                if((params[k]?.std||0)>0) items.push({label:v.label,impact:Math.abs(S_.eva.p90-S_.eva.p10)});
+              }));
+              // Add mix variables
+              const mixImpact=Math.abs(S_.tarifa_d_net.p90-S_.tarifa_d_net.p10)*365*(params.flota_diaria?.mean||80)*(params.ocupacion_diaria?.mean||72)/100;
+              if(mixImpact>0) items.push({label:"Mix tarifas diaria",impact:mixImpact});
+              items.sort((a,b)=>b.impact-a.impact);
+              const maxI=items[0]?.impact||1;
+              return items.slice(0,10).map(({label,impact})=>(
                 <div key={label} style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
-                  <div style={{width:200,fontSize:11,color:C.muted,textAlign:"right",flexShrink:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{label}</div>
-                  <div style={{flex:1,background:C.light,borderRadius:4,height:20,overflow:"hidden"}}>
-                    <div style={{width:`${impact/maxImpact*100}%`,height:"100%",
-                      background:`linear-gradient(90deg,${dir>0?C.teal:C.red}88,${dir>0?C.teal:C.red})`,borderRadius:4}}/>
+                  <div style={{width:220,fontSize:11,color:C.muted,textAlign:"right",flexShrink:0,
+                    overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{label}</div>
+                  <div style={{flex:1,background:C.light,borderRadius:4,height:18,overflow:"hidden"}}>
+                    <div style={{width:`${impact/maxI*100}%`,height:"100%",
+                      background:`linear-gradient(90deg,${C.teal}88,${C.teal})`,borderRadius:4}}/>
                   </div>
-                  <div style={{width:90,textAlign:"right",fontFamily:"monospace",fontSize:12,fontWeight:600,color:C.navy,flexShrink:0}}>{fmt$(impact)}</div>
+                  <div style={{width:90,textAlign:"right",fontFamily:mono,fontSize:12,fontWeight:600,color:C.deep,flexShrink:0}}>{fmt$(impact)}</div>
                 </div>
               ));
             })()}
-            <div style={{marginTop:16,display:"flex",gap:20,fontSize:11,color:C.muted}}>
-              <span><span style={{color:C.teal,fontWeight:700}}>■</span> Aumentar mejora EVA</span>
-              <span><span style={{color:C.red,fontWeight:700}}>■</span> Reducir mejora EVA</span>
-            </div>
           </div>
         )}
 
-        {!S_ && activeTab !== "params" && (
+        {!S_&&activeTab!=="params"&&(
           <div style={{textAlign:"center",padding:"60px 20px",color:C.muted}}>
             <div style={{fontSize:40,marginBottom:12}}>🚗</div>
             <div style={{fontSize:16,fontWeight:600,marginBottom:8}}>Sin resultados aún</div>
-            <div style={{fontSize:13}}>Ajusta los parámetros y presiona <strong>Correr Simulación</strong></div>
+            <div style={{fontSize:13}}>Ajusta los supuestos y presiona <strong>▶ Simular</strong></div>
           </div>
         )}
-
       </div>
 
       <div style={{textAlign:"center",padding:"20px",fontSize:11,color:C.muted}}>
-        Promundial Consulting Group · Simulador Renta de Autos v1 · IR y WACC configurables
+        Promundial Consulting Group · Simulador Renta de Autos v3 · IR y WACC configurables por país
       </div>
     </div>
   );
