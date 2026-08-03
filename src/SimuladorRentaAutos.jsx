@@ -833,12 +833,17 @@ export default function SimuladorRentaAutos(){
     origParamsRef.current={...paramsRef.current};
     setGsRunning(true);
     setTimeout(()=>{
+      // Pe_capturado: meta en % → convertir a valor absoluto usando Pe actual
+      let targetAbsoluto = gsTarget;
+      if(gsMetric==="Pe_capturado" && S_){
+        targetAbsoluto = S_.Pe.p50 * (gsTarget/100);
+      }
       const result=goalSeekRA({
         params:paramsRef.current,
         mixD:mixDRef.current,
         mixC:mixCRef.current,
         metric:gsMetric,
-        target:gsTarget,
+        target:targetAbsoluto,
         conf:gsConf,
         levers,
       });
@@ -904,7 +909,13 @@ export default function SimuladorRentaAutos(){
               <div style={{display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-end",marginBottom:16}}>
                 <div>
                   <div style={{fontSize:10,color:C.muted,marginBottom:4,textTransform:"uppercase",letterSpacing:1}}>Métrica objetivo</div>
-                  <select value={gsMetric} onChange={e=>setGsMetric(e.target.value)}
+                  <select value={gsMetric} onChange={e=>{
+                    const m=e.target.value;
+                    setGsMetric(m);
+                    // Default: Pe_capturado → 75%, others → 0
+                    if(m==="Pe_capturado") setGsTarget(75);
+                    else setGsTarget(0);
+                  }}
                     style={{padding:"7px 10px",borderRadius:5,border:`1px solid ${C.border}`,fontSize:12,fontFamily:mono,background:C.light}}>
                     <option value="eva">EVA</option>
                     <option value="ebitda">EBITDA</option>
@@ -913,9 +924,26 @@ export default function SimuladorRentaAutos(){
                   </select>
                 </div>
                 <div>
-                  <div style={{fontSize:10,color:C.muted,marginBottom:4,textTransform:"uppercase",letterSpacing:1}}>Meta USD/año</div>
-                  <input type="number" value={gsTarget} onChange={e=>setGsTarget(parseFloat(e.target.value)||0)}
-                    style={{padding:"7px 10px",borderRadius:5,border:`1px solid ${C.border}`,fontSize:12,fontFamily:mono,background:C.light,width:130}}/>
+                  <div style={{fontSize:10,color:C.muted,marginBottom:4,textTransform:"uppercase",letterSpacing:1}}>
+                    {gsMetric==="Pe_capturado" ? "Meta OAE (%)" : "Meta USD/año"}
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:4}}>
+                    <input type="number"
+                      value={gsTarget}
+                      min={gsMetric==="Pe_capturado"?0:undefined}
+                      max={gsMetric==="Pe_capturado"?100:undefined}
+                      step={gsMetric==="Pe_capturado"?0.5:undefined}
+                      onChange={e=>setGsTarget(parseFloat(e.target.value)||0)}
+                      style={{padding:"7px 10px",borderRadius:5,border:`1px solid ${C.border}`,fontSize:12,fontFamily:mono,background:C.light,width:100}}/>
+                    <span style={{fontSize:12,color:C.muted,fontFamily:mono}}>
+                      {gsMetric==="Pe_capturado" ? "%" : "USD"}
+                    </span>
+                  </div>
+                  {gsMetric==="Pe_capturado"&&S_&&(
+                    <div style={{fontSize:10,color:C.muted,marginTop:3}}>
+                      Pe actual: {fmt$(S_.Pe.p50)} · Meta: {fmt$(S_.Pe.p50*(gsTarget/100))}
+                    </div>
+                  )}
                 </div>
                 <div>
                   <div style={{fontSize:10,color:C.muted,marginBottom:4,textTransform:"uppercase",letterSpacing:1}}>Confianza</div>
@@ -974,8 +1002,10 @@ export default function SimuladorRentaAutos(){
                     {gsResult.ok?"✅ Meta alcanzada":"⚠️ Meta difícil de alcanzar — mejor resultado encontrado"}
                   </div>
                   <div style={{fontSize:12,fontFamily:mono,opacity:0.9}}>
-                    {gsMetric.toUpperCase()} objetivo: {fmt$(gsTarget)} →
-                    Logrado: {fmt$(gsResult.final)} ({gsConf}% confianza) · {gsResult.iters} iteraciones
+                    {gsMetric==="Pe_capturado"
+                      ? `OAE objetivo: ${gsTarget}% → Logrado: ${S_?pct(gsResult.final/Math.max(S_.Pe.p50,1)):"—"} (${gsConf}% confianza) · ${gsResult.iters} iteraciones`
+                      : `${gsMetric.toUpperCase()} objetivo: ${fmt$(gsTarget)} → Logrado: ${fmt$(gsResult.final)} (${gsConf}% confianza) · ${gsResult.iters} iteraciones`
+                    }
                   </div>
                 </div>
 
