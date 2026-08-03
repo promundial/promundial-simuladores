@@ -473,7 +473,78 @@ function runSim(params, mixD, mixC, N=3000){
   return out;
 }
 
-// ─── UI Components ─────────────────────────────────────────────────
+// ─── Goal Seek algorithm ───────────────────────────────────────────
+function pctle(arr, p){ return arr[Math.floor(p/100*(arr.length-1))]; }
+
+// Direction hints for levers: +1 = increase improves metric, -1 = decrease improves metric
+const LEVER_DIR = {
+  // Flota — más flota sube revenue
+  flota_diaria:1, flota_corp:1,
+  // OAE Disp — reducir pérdidas mejora D
+  h_alistamiento:-1, contratos_mes_auto:-1, h_mant_prev:-1,
+  h_reparacion:-1, frec_reparacion:-1, dias_siniestro:-1, tasa_siniestros:-1,
+  // OAE Util — más ocupación sube revenue
+  ocupacion_diaria:1, ocupacion_corp:1,
+  noshow_pct:-1, turnaround_pct:-1, estacionalidad_pct:-1,
+  // OAE Yield — menos descuento sube revenue
+  upgrade_gratuito_pct:-1, tarifa_negociada_pct:-1,
+  // OAE Cal — menos pérdidas mejora Q
+  danos_no_cobrados:-1, noshow_sin_cargo:-1, reclamos_seguro:-1, compensaciones:-1,
+  // Anciliares — más precio/attach sube revenue
+  cdw_precio:1, cdw_attach:1, sli_precio:1, sli_attach:1,
+  pai_precio:1, pai_attach:1, gps_precio:1, gps_attach:1,
+  silla_precio:1, silla_attach:1, conductor_precio:1, conductor_attach:1,
+  combustible_precio:1, combustible_attach:1, road_assist_precio:1, road_assist_attach:1,
+  // Costos — reducir costos mejora métrica
+  mant_pct_valor:-1, seguro_pct_valor:-1, lavado_mes:-1, combustible_mes:-1,
+  // Gastos fijos — reducir mejora
+  alquiler_oficinas:-1, alquiler_parqueo:-1, marketing_mes:-1,
+};
+
+function goalSeekRA({params, mixD, mixC, metric, target, conf, levers, maxIter=20, simN=400}){
+  let cur = {}; Object.entries(params).forEach(([k,v]) => cur[k] = {...v});
+  const log = [], checkP = 100 - conf;
+
+  for(let it = 0; it < maxIter; it++){
+    const res = [];
+    for(let i=0;i<simN;i++) res.push(simOne(cur, mixD, mixC));
+    const vals = res.map(r => r[metric]).sort((a,b) => a-b);
+    const cv = pctle(vals, checkP);
+    const gap = target - cv;
+    log.push({it, val:cv, gap});
+
+    if(Math.abs(gap) < Math.abs(target) * 0.02 || gap <= 0)
+      return {ok:true, params:cur, log, final:cv, iters:it+1};
+
+    // Compute sensitivity for each lever
+    const sens = {}; let totS = 0;
+    levers.forEach(k => {
+      const delta = 0.05;
+      const pUp = {...cur, [k]:{...cur[k], mean: Math.min(cur[k].max, cur[k].mean*(1+delta))}};
+      const pDn = {...cur, [k]:{...cur[k], mean: Math.max(cur[k].min, cur[k].mean*(1-delta))}};
+      const vUp = pctle(Array.from({length:200},()=>simOne(pUp,mixD,mixC)).map(r=>r[metric]).sort((a,b)=>a-b), checkP);
+      const vDn = pctle(Array.from({length:200},()=>simOne(pDn,mixD,mixC)).map(r=>r[metric]).sort((a,b)=>a-b), checkP);
+      sens[k] = (vUp - vDn) / (2 * delta);
+      totS += Math.abs(sens[k]);
+    });
+
+    if(!totS) return {ok:false, params:cur, log, final:cv, iters:it+1};
+
+    // Adjust levers proportionally to sensitivity
+    levers.forEach(k => {
+      if(Math.abs(sens[k]) < totS * 0.01) return;
+      const w = Math.abs(sens[k]) / totS;
+      let adj = Math.max(-0.12, Math.min(0.12, (gap / (sens[k]||1)) * w * 0.35));
+      const dir = LEVER_DIR[k] || 0;
+      if(dir === 1)  adj = Math.max(0, adj);   // only increase
+      if(dir === -1) adj = Math.min(0, adj);   // only decrease
+      const newMean = cur[k].mean * (1 + adj);
+      cur[k] = {...cur[k], mean: Math.max(cur[k].min, Math.min(cur[k].max, newMean))};
+    });
+  }
+  const fRes = Array.from({length:simN},()=>simOne(cur,mixD,mixC)).map(r=>r[metric]).sort((a,b)=>a-b);
+  return {ok:false, params:cur, log, final:pctle(fRes,checkP), iters:maxIter};
+}
 function Histo({p10, p50, p90, color, label, h=72}){
   // Genera distribución sintética Normal con los percentiles dados
   const sigma = Math.max(1, (p90 - p10) / 2.563);
@@ -640,6 +711,7 @@ function OAEBar({label,value,color,brecha,Pe,icon}){
 
 const TABS=[
   {id:"params",    label:"📋 Supuestos"},
+  {id:"goalseeking",label:"🎯 Goal Seek"},
   {id:"resultados",label:"📊 Resultados"},
   {id:"oae",       label:"📐 OAE"},
   {id:"waterfall", label:"💧 Cascada P&L"},
@@ -655,6 +727,14 @@ export default function SimuladorRentaAutos(){
   const [S_,setS_]=useState(null);
   const [running,setRunning]=useState(false);
   const [N,setN]=useState(3000);
+  // Goal Seek state
+  const [gsMetric,setGsMetric]=useState("eva");
+  const [gsTarget,setGsTarget]=useState(0);
+  const [gsConf,setGsConf]=useState(70);
+  const [gsLevers,setGsLevers]=useState({});
+  const [gsResult,setGsResult]=useState(null);
+  const [gsRunning,setGsRunning]=useState(false);
+  const origParamsRef=useRef(null);
   const paramsRef=useRef(params);
   const mixDRef=useRef(mixDiaria);
   const mixCRef=useRef(mixCorp);
@@ -666,14 +746,37 @@ export default function SimuladorRentaAutos(){
   const handleMixC=useCallback(fn=>{setMixCorp(prev=>{const n=typeof fn==="function"?fn(prev):fn;mixCRef.current=n;return n;});},[]);
   const toggleSec=id=>setOpenSec(prev=>({...prev,[id]:!prev[id]}));
 
-  const handleRun=useCallback(()=>{
-    setRunning(true);
+  const handleRun=useCallback(()=>{    setRunning(true);
     setTimeout(()=>{
       setS_(runSim(paramsRef.current,mixDRef.current,mixCRef.current,N));
       setRunning(false);
       setActiveTab("resultados");
     },30);
   },[N]);
+
+  const handleGoalSeek=useCallback(()=>{
+    const levers=Object.keys(gsLevers).filter(k=>gsLevers[k]);
+    if(!levers.length) return;
+    origParamsRef.current={...paramsRef.current};
+    setGsRunning(true);
+    setTimeout(()=>{
+      const result=goalSeekRA({
+        params:paramsRef.current,
+        mixD:mixDRef.current,
+        mixC:mixCRef.current,
+        metric:gsMetric,
+        target:gsTarget,
+        conf:gsConf,
+        levers,
+      });
+      setGsResult(result);
+      setParams(prev=>{const n={...prev};Object.entries(result.params).forEach(([k,v])=>{n[k]={...v};});paramsRef.current=n;return n;});
+      const fullRes=runSim(result.params,mixDRef.current,mixCRef.current,N);
+      setS_(fullRes);
+      setGsRunning(false);
+      setActiveTab("goalseeking");
+    },50);
+  },[gsMetric,gsTarget,gsConf,gsLevers,N]);
 
   const resetSigma=()=>{
     const z={};Object.entries(paramsRef.current).forEach(([k,v])=>z[k]={...v,std:0});
@@ -695,6 +798,9 @@ export default function SimuladorRentaAutos(){
           <select value={N} onChange={e=>setN(+e.target.value)} style={{background:"#1a3a2a",color:C.gold,border:`1px solid ${C.gold}55`,borderRadius:6,padding:"6px 10px",fontSize:12,cursor:"pointer"}}>
             {[1000,3000,5000,10000].map(n=><option key={n} value={n}>{n.toLocaleString()} iter.</option>)}
           </select>
+          <button onClick={handleGoalSeek} disabled={gsRunning} style={{background:gsRunning?"#555":`${C.gold}22`,color:C.gold,border:`1.5px solid ${C.gold}`,padding:"9px 16px",borderRadius:6,fontWeight:700,fontSize:13,cursor:gsRunning?"not-allowed":"pointer"}}>
+            {gsRunning?"⏳ Buscando...":"🎯 Goal Seek"}
+          </button>
           <button onClick={handleRun} disabled={running} style={{background:running?"#555":C.gold,color:"#fff",border:"none",padding:"9px 22px",borderRadius:6,fontWeight:700,fontSize:13,cursor:running?"not-allowed":"pointer"}}>
             {running?"⏳ Simulando...":"▶ Simular"}
           </button>
@@ -716,6 +822,151 @@ export default function SimuladorRentaAutos(){
       <div style={{padding:"16px 20px",maxWidth:1300,margin:"0 auto"}}>
 
         {/* ══ SUPUESTOS ══ */}
+        {/* ══ GOAL SEEK ══ */}
+        {activeTab==="goalseeking"&&(
+          <div>
+            {/* Config panel */}
+            <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"18px 20px",marginBottom:14,borderTop:`3px solid ${C.gold}`}}>
+              <div style={{fontSize:13,fontWeight:700,color:C.deep,marginBottom:14}}>🎯 Configuración Goal Seek</div>
+              <div style={{display:"flex",gap:12,flexWrap:"wrap",alignItems:"flex-end",marginBottom:16}}>
+                <div>
+                  <div style={{fontSize:10,color:C.muted,marginBottom:4,textTransform:"uppercase",letterSpacing:1}}>Métrica objetivo</div>
+                  <select value={gsMetric} onChange={e=>setGsMetric(e.target.value)}
+                    style={{padding:"7px 10px",borderRadius:5,border:`1px solid ${C.border}`,fontSize:12,fontFamily:mono,background:C.light}}>
+                    <option value="eva">EVA</option>
+                    <option value="ebitda">EBITDA</option>
+                    <option value="util_neta">Utilidad Neta</option>
+                    <option value="Pe_capturado">Pe Capturado (OAE × Pe)</option>
+                  </select>
+                </div>
+                <div>
+                  <div style={{fontSize:10,color:C.muted,marginBottom:4,textTransform:"uppercase",letterSpacing:1}}>Meta USD/año</div>
+                  <input type="number" value={gsTarget} onChange={e=>setGsTarget(parseFloat(e.target.value)||0)}
+                    style={{padding:"7px 10px",borderRadius:5,border:`1px solid ${C.border}`,fontSize:12,fontFamily:mono,background:C.light,width:130}}/>
+                </div>
+                <div>
+                  <div style={{fontSize:10,color:C.muted,marginBottom:4,textTransform:"uppercase",letterSpacing:1}}>Confianza</div>
+                  <select value={gsConf} onChange={e=>setGsConf(+e.target.value)}
+                    style={{padding:"7px 10px",borderRadius:5,border:`1px solid ${C.border}`,fontSize:12,fontFamily:mono,background:C.light}}>
+                    {[50,60,70,80,90].map(n=><option key={n} value={n}>{n}%</option>)}
+                  </select>
+                </div>
+                <button onClick={handleGoalSeek} disabled={gsRunning||!Object.values(gsLevers).some(v=>v)}
+                  style={{padding:"8px 20px",borderRadius:6,border:"none",background:gsRunning?C.muted:`linear-gradient(135deg,${C.gold},${C.orange})`,
+                    color:"#fff",fontWeight:700,fontSize:13,cursor:gsRunning?"not-allowed":"pointer"}}>
+                  {gsRunning?"⏳ Buscando...":"🎯 Buscar"}
+                </button>
+                {gsResult&&origParamsRef.current&&(
+                  <button onClick={()=>{
+                    setParams(prev=>{const n={...prev};Object.entries(origParamsRef.current).forEach(([k,v])=>{n[k]={...v};});paramsRef.current=n;return n;});
+                    setGsResult(null);
+                  }} style={{padding:"8px 14px",borderRadius:6,border:`1px solid ${C.border}`,background:C.light,color:C.muted,fontSize:12,cursor:"pointer"}}>
+                    ↩ Revertir
+                  </button>
+                )}
+              </div>
+
+              {/* Lever selector */}
+              <div style={{fontSize:12,fontWeight:600,color:C.deep,marginBottom:10}}>Selecciona las palancas que el algoritmo puede ajustar:</div>
+              {GROUPS.map(g=>{
+                const leverKeys=Object.entries(g.params)
+                  .filter(([k])=>LEVER_DIR[k]!==undefined)
+                  .map(([k,v])=>({k,label:v.label,dir:LEVER_DIR[k]}));
+                if(!leverKeys.length) return null;
+                return(
+                  <div key={g.id} style={{marginBottom:10}}>
+                    <div style={{fontSize:11,fontWeight:600,color:C.muted,marginBottom:5}}>{g.label}</div>
+                    <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                      {leverKeys.map(({k,label,dir})=>(
+                        <button key={k} onClick={()=>setGsLevers(p=>({...p,[k]:!p[k]}))}
+                          style={{padding:"4px 10px",borderRadius:4,fontSize:11,fontFamily:mono,cursor:"pointer",
+                            border:`1px solid ${gsLevers[k]?C.gold:C.border}`,
+                            background:gsLevers[k]?`${C.gold}18`:"transparent",
+                            color:gsLevers[k]?C.deep:C.muted}}>
+                          {dir===1?"↑ ":dir===-1?"↓ ":""}{label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Results */}
+            {gsResult&&S_&&(
+              <div>
+                <div style={{background:gsResult.ok?`linear-gradient(135deg,${C.green},${C.deep})`:`linear-gradient(135deg,${C.orange},${C.red})`,
+                  borderRadius:10,padding:"16px 20px",color:"#fff",marginBottom:14}}>
+                  <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>
+                    {gsResult.ok?"✅ Meta alcanzada":"⚠️ Meta difícil de alcanzar — mejor resultado encontrado"}
+                  </div>
+                  <div style={{fontSize:12,fontFamily:mono,opacity:0.9}}>
+                    {gsMetric.toUpperCase()} objetivo: {fmt$(gsTarget)} →
+                    Logrado: {fmt$(gsResult.final)} ({gsConf}% confianza) · {gsResult.iters} iteraciones
+                  </div>
+                </div>
+
+                {/* Changed levers */}
+                <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"18px 20px",marginBottom:14}}>
+                  <div style={{fontSize:13,fontWeight:700,color:C.deep,marginBottom:12}}>📊 Cambios recomendados en palancas</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 80px 80px 60px",gap:4,padding:"6px 8px",
+                    background:C.deep,color:"#fff",borderRadius:"4px 4px 0 0",fontSize:11,fontFamily:mono,fontWeight:600}}>
+                    <div>Parámetro</div><div style={{textAlign:"center"}}>Actual</div><div style={{textAlign:"center"}}>Objetivo</div><div style={{textAlign:"center"}}>Δ</div>
+                  </div>
+                  {Object.keys(gsLevers).filter(k=>gsLevers[k]).map((k,i)=>{
+                    const orig=origParamsRef.current?.[k]?.mean;
+                    const opt=gsResult.params[k]?.mean;
+                    if(orig===undefined||opt===undefined) return null;
+                    const delta=orig!==0?(opt-orig)/Math.abs(orig)*100:0;
+                    const p=GROUPS.flatMap(g=>Object.entries(g.params)).find(([pk])=>pk===k);
+                    const label=p?p[1].label:k;
+                    const unit=p?p[1].unit:"";
+                    const fmt=v=>unit==="$"?fmt$(v):unit==="%"?v.toFixed(1)+"%":Math.round(v).toLocaleString()+(unit?" "+unit:"");
+                    const improved=Math.abs(delta)>0.3;
+                    return(
+                      <div key={k} style={{display:"grid",gridTemplateColumns:"1fr 80px 80px 60px",gap:4,padding:"6px 8px",
+                        background:i%2===0?C.light:C.card,borderBottom:`1px solid ${C.border}`,alignItems:"center"}}>
+                        <div style={{fontSize:11,color:C.text}}>{label}</div>
+                        <div style={{textAlign:"center",fontFamily:mono,fontSize:11,color:C.muted}}>{fmt(orig)}</div>
+                        <div style={{textAlign:"center",fontFamily:mono,fontSize:11,fontWeight:improved?700:400,
+                          color:improved?(delta>0?C.green:C.orange):C.muted,
+                          background:improved?(delta>0?`${C.green}12`:`${C.orange}12`):"transparent",
+                          borderRadius:3,padding:"1px 4px"}}>{fmt(opt)}</div>
+                        <div style={{textAlign:"center",fontFamily:mono,fontSize:10,fontWeight:600,
+                          color:delta>0?C.green:delta<0?C.orange:C.muted}}>
+                          {delta>0?"▲":"▼"} {Math.abs(delta).toFixed(1)}%
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* KPI summary after goal seek */}
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:10}}>
+                  {[
+                    ["EVA",fmt$(S_.eva.p50),S_.eva.p50>=0?C.green:C.red,"⚡"],
+                    ["EBITDA",fmt$(S_.ebitda.p50),C.teal,"📈"],
+                    ["Utilidad Neta",fmt$(S_.util_neta.p50),S_.util_neta.p50>=0?C.deep:C.red,"🏆"],
+                    ["Pe Capturado",fmt$(S_.Pe_capturado.p50),C.gold,"📐"],
+                    ["OAE",pct(S_.OAE.p50),S_.OAE.p50>0.6?C.green:C.orange,"🎯"],
+                    ["Revenue Total",fmt$(S_.rev_total.p50),C.blue,"💰"],
+                  ].map(([l,v,col,icon])=>(
+                    <KpiCard key={l} label={l} icon={icon} val={v} p10="—" p90="—" color={col}/>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {!gsResult&&(
+              <div style={{textAlign:"center",padding:"40px 20px",color:C.muted}}>
+                <div style={{fontSize:32,marginBottom:10}}>🎯</div>
+                <div style={{fontSize:14,fontWeight:600,marginBottom:6}}>Configura la meta y selecciona las palancas</div>
+                <div style={{fontSize:12}}>El algoritmo ajustará las palancas seleccionadas para alcanzar tu objetivo con el nivel de confianza elegido.</div>
+              </div>
+            )}
+          </div>
+        )}
+
         {activeTab==="params"&&(
           <div>
             <div style={{fontSize:11,color:C.muted,marginBottom:12}}>
