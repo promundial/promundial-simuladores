@@ -89,10 +89,20 @@ const GROUPS = [
     valor_residual_pct:  {mean:35,  std:3,   min:5,   max:70,    label:"Valor residual al cierre (%)",          unit:"%"},
   }},
   { id:"oae_disp", label:"📐 OAE — Disponibilidad", params:{
-    mant_preventivo_pct: {mean:4,   std:1,   min:0,   max:20,    label:"Días en mantenimiento preventivo (%)",  unit:"%"},
-    mant_correctivo_pct: {mean:3,   std:1,   min:0,   max:20,    label:"Días en reparación/correctivo (%)",     unit:"%"},
-    siniestro_disp_pct:  {mean:2,   std:0.5, min:0,   max:15,    label:"Días inmovilizados por siniestro (%)",  unit:"%"},
-    prep_entrega_pct:    {mean:1,   std:0.5, min:0,   max:10,    label:"Días en prep./entrega de flota (%)",    unit:"%"},
+    // Contexto operativo
+    horas_jornada:       {mean:10,  std:0,   min:6,   max:24,    label:"Horas jornada operativa por día",          unit:"h"},
+    dias_mes:            {mean:26,  std:0,   min:20,  max:31,    label:"Días operativos por mes",                  unit:"d"},
+    // Alistamiento (por contrato/rotación)
+    h_alistamiento:      {mean:3,   std:0.5, min:0.5, max:12,    label:"Tiempo alistamiento por contrato (h)",     unit:"h"},
+    contratos_mes_auto:  {mean:8,   std:1,   min:1,   max:30,    label:"Contratos promedio/vehículo diaria/mes",   unit:"u"},
+    // Mantenimiento preventivo
+    h_mant_prev:         {mean:4,   std:1,   min:0,   max:24,    label:"Tiempo mantenimiento preventivo/veh. (h/mes)", unit:"h"},
+    // Reparación correctiva
+    h_reparacion:        {mean:8,   std:2,   min:0,   max:72,    label:"Tiempo reparación correctiva por evento (h)", unit:"h"},
+    frec_reparacion:     {mean:0.3, std:0.1, min:0,   max:3,     label:"Frecuencia reparaciones/veh./mes",         unit:"u"},
+    // Siniestros
+    dias_siniestro:      {mean:12,  std:3,   min:0,   max:60,    label:"Días inmovilización por siniestro",        unit:"d"},
+    tasa_siniestros:     {mean:0.15,std:0.05,min:0,   max:2,     label:"Siniestros/vehículo/año",                  unit:"u"},
   }},
   { id:"oae_util", label:"📐 OAE — Utilización", params:{
     ocupacion_diaria:    {mean:72,  std:6,   min:20,  max:98,    label:"Ocupación base flota diaria (%)",       unit:"%"},
@@ -110,12 +120,6 @@ const GROUPS = [
     noshow_sin_cargo:    {mean:1,   std:0.5, min:0,   max:8,     label:"No-shows sin cargo aplicado (%)",       unit:"%"},
     reclamos_seguro:     {mean:1.5, std:0.5, min:0,   max:10,    label:"Reclamos de seguro pendientes (%)",     unit:"%"},
     compensaciones:      {mean:0.5, std:0.2, min:0,   max:5,     label:"Créditos/compensaciones por quejas (%)",unit:"%"},
-  }},
-  { id:"diaria", label:"📅 Renta Diaria", params:{
-    plazo_contrato_d:    {mean:3.5, std:0.5, min:1,   max:30,    label:"Días promedio por contrato diario",     unit:"d"},
-  }},
-  { id:"corp", label:"🏢 Corporativa", params:{
-    plazo_contrato:      {mean:12,  std:2,   min:1,   max:60,    label:"Plazo promedio contrato (meses)",       unit:"m"},
   }},
   { id:"costos", label:"🔧 Costos Operativos", params:{
     mant_pct_valor:      {mean:1.2, std:0.2, min:0,   max:5,     label:"Mantenimiento (% valor auto/año)",      unit:"%"},
@@ -160,22 +164,47 @@ function simOne(p,mixD,mixC){
   const val_std_pct = Math.max(0, S(p.valor_std_pct)/100);
 
   // ── OAE D: Disponibilidad ──────────────────────────────────────────
-  // D = 1 − suma de % días perdidos por causas internas
-  const disp_loss = Math.min(1,
-    S(p.mant_preventivo_pct)/100 + S(p.mant_correctivo_pct)/100
-    + S(p.siniestro_disp_pct)/100 + S(p.prep_entrega_pct)/100);
-  const D = Math.max(0, 1 - disp_loss);
+  // D se calcula desde KPIs operativos reales, no % abstractos
+  // Contexto
+  const horas_dia   = Math.max(1, S(p.horas_jornada));
+  const dias_mes_op = Math.max(1, S(p.dias_mes));
+  const horas_mes   = horas_dia * dias_mes_op;  // horas-activo disponibles por mes/veh
+
+  // Pérdida 1: Alistamiento (limpieza, inspección, papeles por cada rotación)
+  const h_alist    = Math.max(0, S(p.h_alistamiento));
+  const contratos  = Math.max(0, S(p.contratos_mes_auto));
+  const pct_alist  = Math.min(0.5, (h_alist * contratos) / horas_mes);
+
+  // Pérdida 2: Mantenimiento preventivo
+  const h_prev     = Math.max(0, S(p.h_mant_prev));
+  const pct_prev   = Math.min(0.4, h_prev / horas_mes);
+
+  // Pérdida 3: Reparación correctiva (frecuencia × horas por evento)
+  const h_rep      = Math.max(0, S(p.h_reparacion));
+  const frec_rep   = Math.max(0, S(p.frec_reparacion));
+  const pct_rep    = Math.min(0.4, (h_rep * frec_rep) / horas_mes);
+
+  // Pérdida 4: Siniestros (tasa anual × días inmovilizado → % días mes)
+  const dias_sin   = Math.max(0, S(p.dias_siniestro));
+  const tasa_sin   = Math.max(0, S(p.tasa_siniestros));
+  const pct_sin    = Math.min(0.3, (tasa_sin * dias_sin) / (12 * dias_mes_op));
+
+  const disp_loss  = Math.min(0.95, pct_alist + pct_prev + pct_rep + pct_sin);
+  const D          = Math.max(0.05, 1 - disp_loss);
+
+  // Guardar los componentes para diagnóstico
+  const _disp_components = { pct_alist, pct_prev, pct_rep, pct_sin, horas_mes };
 
   // ── OAE U: Utilización ─────────────────────────────────────────────
-  // U = ocupación efectiva sobre días disponibles (ya incluye D)
-  // Los factores (no-show, turnaround, estacionalidad) reducen la ocupación base
+  // U = Cu / Cd (capacidad utilizada / capacidad disponible)
+  // IMPORTANTE: U debe ponderarse por capacidad económica (no por número de vehículos)
+  // para que se cumpla la identidad algebraica: OAE = D × U × Y × Q = Ve / Cp
   const ocup_d_base = Math.max(0, Math.min(1, S(p.ocupacion_diaria)/100));
   const ocup_c_base = Math.max(0, Math.min(1, S(p.ocupacion_corp)/100));
   const util_adj = Math.min(ocup_d_base,
     S(p.noshow_pct)/100 + S(p.turnaround_pct)/100 + S(p.estacionalidad_pct)/100);
   const ocup_d = Math.max(0, ocup_d_base - util_adj);
-  const ocup_c = Math.max(0, ocup_c_base - util_adj * 0.5); // corp contratos son más estables
-  const U = (flota_d * ocup_d + flota_c * ocup_c) / flota_total;
+  const ocup_c = Math.max(0, ocup_c_base - util_adj * 0.5); // corp: contratos más estables
 
   // ── Mix samples ────────────────────────────────────────────────────
   const {tarifa:tarifa_d_rack, desc:desc_d_mix, valor:val_d_base} = sampleMix(mixD);
@@ -186,61 +215,57 @@ function simOne(p,mixD,mixC){
   const val_c = Math.max(1000, val_c_base * (1 + randn() * val_std_pct));
 
   // ── OAE Y: Yield ───────────────────────────────────────────────────
-  // Y = tarifa efectiva cobrada / tarifa de lista (rack rate)
-  // Descuento efectivo = descuento del mix + descuentos adicionales (upgrades, negociación)
   const yield_extra_d = S(p.upgrade_gratuito_pct)/100 + S(p.tarifa_negociada_pct)/100;
-  const yield_extra_c = S(p.tarifa_negociada_pct)/100; // corp no tiene upgrades
+  const yield_extra_c = S(p.tarifa_negociada_pct)/100;
   const desc_d_total = Math.min(0.95, desc_d_mix + yield_extra_d);
   const desc_c_total = Math.min(0.95, desc_c_mix + yield_extra_c);
-  const Y_d = 1 - desc_d_total;  // yield canal diaria
-  const Y_c = 1 - desc_c_total;  // yield canal corporativo
+  const Y_d = 1 - desc_d_total;
+  const Y_c = 1 - desc_c_total;
 
-  // Capacidad potencial por canal (sin D, sin Y, sin Q — solo Cp)
-  // Cp_d = flota_d × 365 días × tarifa_rack_d
-  // Cp_c = flota_c × 12 meses × DAYS_PER_MONTH días/mes × (tarifa_mes/DAYS_PER_MONTH)
-  //      = flota_c × 365 × tarifa_rack_diaria_equiv
-  // Para Pe usamos tarifa diaria equivalente para ambos canales
-  const tarifa_c_dia = tarifa_c_rack / DAYS_PER_MONTH; // $/mes → $/día
-
-  // Cp por canal (capacidad potencial = 100% D, 100% U, 100% Y, 100% Q)
+  // ── Capacidad potencial Cp ─────────────────────────────────────────
+  const tarifa_c_dia = tarifa_c_rack / DAYS_PER_MONTH; // $/mes → $/día equiv.
   const Cp_d = flota_d * 365 * tarifa_d_rack;
   const Cp_c = flota_c * 365 * tarifa_c_dia;
-  const Cp   = Cp_d + Cp_c; // Potencial Económico total
+  const Cp   = Cp_d + Cp_c;
 
-  // Cd por canal (capacidad disponible = Cp × D)
+  // ── Cascada OAE ────────────────────────────────────────────────────
+  // Cd (disponible) = Cp × D
   const Cd_d = Cp_d * D;
   const Cd_c = Cp_c * D;
 
-  // Cu por canal (capacidad utilizada = Cd × U_canal)
-  const Cu_d = Cd_d * ocup_d;  // nota: ocup_d ya es fracción de días rentados sobre disponibles
+  // Cu (utilizada) = Cd × ocup_canal
+  const Cu_d = Cd_d * ocup_d;
   const Cu_c = Cd_c * ocup_c;
+  const Cu_total = Cu_d + Cu_c;
 
-  // Vc por canal (ingreso capturado = Cu × Y)
+  // U ponderado por capacidad económica para satisfacer OAE = D×U×Y×Q = Ve/Cp
+  // U = Cu_total / (Cd_d + Cd_c)  (no por número de vehículos — eso rompe la identidad)
+  const U = Cu_total > 0 ? Cu_total / (Cd_d + Cd_c) : 0;
+
+  // Vc (capturado) = Cu × Y
   const Vc_d = Cu_d * Y_d;
   const Vc_c = Cu_c * Y_c;
   const Vc   = Vc_d + Vc_c;
 
+  // Y ponderado = Vc / Cu_total
+  const Y_pond = Cu_total > 0 ? Vc / Cu_total : 1;
+
   // ── OAE Q: Calidad ─────────────────────────────────────────────────
-  // Q = Ve / Vc → fracción del ingreso cobrado que se convierte en ingreso neto entregado
   const cal_loss = Math.min(1,
     S(p.danos_no_cobrados)/100 + S(p.noshow_sin_cargo)/100
     + S(p.reclamos_seguro)/100 + S(p.compensaciones)/100);
   const Q  = Math.max(0, 1 - cal_loss);
-  const Ve = Vc * Q; // valor entregado neto → es el revenue real del negocio
+  const Ve = Vc * Q;
 
   // ── OAE index y brechas ────────────────────────────────────────────
-  // Y ponderado = Vc / (Cu_d + Cu_c) cuando Cu > 0, else 1
-  const Cu_total = Cu_d + Cu_c;
-  const Y_pond = Cu_total > 0 ? Vc / Cu_total : 1;
-
-  // OAE = D × U × Y × Q  (verificación: también = Ve / Cp)
+  // OAE = D × U × Y × Q = Ve / Cp  (identidad algebraica garantizada)
   const OAE = D * U * Y_pond * Q;
 
-  // Brechas en cascada (cada una usa el residual acumulado de las anteriores)
-  const brecha_disp  = Cp * (1 - D);           // Pe × (1-D)
-  const brecha_util  = Cp * D * (1 - U);       // Cd × (1-U)
-  const brecha_yield = Cp * D * U * (1 - Y_pond); // Cu × (1-Y)
-  const brecha_cal   = Cp * D * U * Y_pond * (1 - Q); // Vc × (1-Q) = Ve debería ser Vc×(1-Q)
+  // Brechas en cascada — suman exactamente Cp − Ve
+  const brecha_disp  = Cp * (1 - D);
+  const brecha_util  = Cp * D * (1 - U);
+  const brecha_yield = Cp * D * U * (1 - Y_pond);
+  const brecha_cal   = Cp * D * U * Y_pond * (1 - Q);
   const Pe_capturado = Ve; // = Cp × OAE
 
   // Verificación interna: brecha_total debe = Cp - Pe_capturado
@@ -310,6 +335,11 @@ function simOne(p,mixD,mixC){
     tarifa_d_net: tarifa_d_rack * Y_d,
     tarifa_c_net: tarifa_c_rack * Y_c,
     val_d, val_c,
+    // Componentes D para diagnóstico
+    pct_alist: _disp_components.pct_alist,
+    pct_prev:  _disp_components.pct_prev,
+    pct_rep:   _disp_components.pct_rep,
+    pct_sin:   _disp_components.pct_sin,
   };
 }
 
@@ -321,6 +351,7 @@ function runSim(params, mixD, mixC, N=3000){
     "D","U","Y","Q","OAE","Pe","Pe_capturado",
     "brecha_disp","brecha_util","brecha_yield","brecha_cal",
     "Vc","Ve","tarifa_d_net","tarifa_c_net","val_d","val_c",
+    "pct_alist","pct_prev","pct_rep","pct_sin",
   ];
   const b = {}; keys.forEach(k => b[k] = []);
   for(let i = 0; i < N; i++){
@@ -608,7 +639,7 @@ export default function SimuladorRentaAutos(){
             {["oae_disp","oae_util","oae_yield","oae_cal"].map(id=>{
               const g=GROUPS.find(g=>g.id===id);
               const hint={
-                oae_disp:"% de días que cada vehículo pierde por causas internas. D = 1 − Σ pérdidas. Impacta directamente el Pe.",
+                oae_disp:"D se calcula automáticamente desde los tiempos operativos reales. Fórmula: % pérdida por causa = horas perdidas / (horas jornada × días mes). La suma de las 4 pérdidas determina D = 1 − Σ.",
                 oae_util:"Factores que reducen la ocupación efectiva sobre los días disponibles. U = ocupación ajustada.",
                 oae_yield:"Descuento adicional sobre el precio rack (lista), más allá del descuento por categoría del mix. Y = 1 − desc_total.",
                 oae_cal:"% del ingreso cobrado (Vc) que no llega como ingreso neto entregado (Ve). Q = 1 − Σ pérdidas de calidad.",
@@ -617,23 +648,66 @@ export default function SimuladorRentaAutos(){
                 <Section key={id} title={g.label} open={!!openSec[id]} onToggle={()=>toggleSec(id)}>
                   <div style={{fontSize:11,color:C.muted,marginBottom:10,padding:"6px 10px",background:`${C.purple}08`,borderRadius:4,border:`1px solid ${C.purple}20`}}>{hint}</div>
                   {Object.entries(g.params).map(([k,v])=>(<ParamRow key={k} k={k} p={v} val={params[k]||v} onChange={handleChange}/>))}
+                  {/* Live D preview for oae_disp */}
+                  {id==="oae_disp"&&(()=>{
+                    const p=params;
+                    const hj=p.horas_jornada.mean, dm=p.dias_mes.mean, hm=hj*dm;
+                    const pA=Math.min(0.5,(p.h_alistamiento.mean*p.contratos_mes_auto.mean)/hm);
+                    const pP=Math.min(0.4,p.h_mant_prev.mean/hm);
+                    const pR=Math.min(0.4,(p.h_reparacion.mean*p.frec_reparacion.mean)/hm);
+                    const pS=Math.min(0.3,(p.tasa_siniestros.mean*p.dias_siniestro.mean)/(12*dm));
+                    const dLoss=Math.min(0.95,pA+pP+pR+pS);
+                    const dVal=Math.max(0.05,1-dLoss);
+                    return(
+                      <div style={{marginTop:12,padding:"12px 14px",background:`${C.teal}10`,borderRadius:8,border:`1px solid ${C.teal}30`}}>
+                        <div style={{fontSize:11,fontWeight:600,color:C.teal,marginBottom:8}}>⚙️ D calculado automáticamente (determinístico, con μ actuales)</div>
+                        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8,marginBottom:10}}>
+                          {[
+                            ["Alistamiento",pA,"% días"],
+                            ["Mant. preventivo",pP,"% días"],
+                            ["Reparaciones",pR,"% días"],
+                            ["Siniestros",pS,"% días"],
+                          ].map(([l,v,u])=>(
+                            <div key={l} style={{background:C.card,borderRadius:6,padding:"8px 10px",border:`1px solid ${C.border}`}}>
+                              <div style={{fontSize:10,color:C.muted}}>{l}</div>
+                              <div style={{fontFamily:mono,fontSize:14,fontWeight:700,color:v>0.08?C.red:v>0.04?C.orange:C.teal}}>{pct(v)}</div>
+                              <div style={{background:C.light,borderRadius:2,height:4,marginTop:4,overflow:"hidden"}}>
+                                <div style={{width:`${Math.min(100,v*500)}%`,height:"100%",background:v>0.08?C.red:v>0.04?C.orange:C.teal}}/>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{display:"flex",gap:20,alignItems:"center"}}>
+                          <div>
+                            <div style={{fontSize:10,color:C.muted}}>Pérdida total</div>
+                            <div style={{fontFamily:mono,fontSize:16,fontWeight:700,color:C.red}}>{pct(dLoss)}</div>
+                          </div>
+                          <div style={{fontSize:20,color:C.muted}}>→</div>
+                          <div>
+                            <div style={{fontSize:10,color:C.muted}}>D = 1 − pérdida</div>
+                            <div style={{fontFamily:mono,fontSize:22,fontWeight:800,color:dVal>0.9?C.green:dVal>0.8?C.teal:dVal>0.7?C.orange:C.red}}>{pct(dVal)}</div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </Section>
               );
             })}
 
             <Section title="📅 Renta Diaria — Mix de Categorías, Tarifas & Valores ($/día)" open={!!openSec.diaria} onToggle={()=>toggleSec("diaria")}>
-              {Object.entries(GROUPS.find(g=>g.id==="diaria").params).map(([k,v])=>(<ParamRow key={k} k={k} p={v} val={params[k]||v} onChange={handleChange}/>))}
+              <div style={{fontSize:11,color:C.muted,margin:"0 0 8px"}}>Ocup. base y factores de utilización se configuran en <strong>OAE — Utilización</strong>. Aquí define el mix de categorías y tarifas.</div>
               <div style={{fontSize:11,color:C.muted,margin:"10px 0 4px"}}>Tarifa y valor ponderados calculados automáticamente desde el mix.</div>
               <MixTable mix={mixDiaria} setMix={handleMixD} tarifaUnit="$/día"/>
             </Section>
 
             <Section title="🏢 Corporativa — Mix de Categorías, Tarifas & Valores ($/mes)" open={!!openSec.corp} onToggle={()=>toggleSec("corp")}>
-              {Object.entries(GROUPS.find(g=>g.id==="corp").params).map(([k,v])=>(<ParamRow key={k} k={k} p={v} val={params[k]||v} onChange={handleChange}/>))}
+              <div style={{fontSize:11,color:C.muted,margin:"0 0 8px"}}>Ocup. base corporativa se configura en <strong>OAE — Utilización</strong>. Aquí define el mix de categorías y tarifas mensuales.</div>
               <div style={{fontSize:11,color:C.muted,margin:"10px 0 4px"}}>La tarifa mensual se convierte a $/día equivalente (÷ 30.44) para el cálculo del Potencial Económico.</div>
               <MixTable mix={mixCorp} setMix={handleMixC} tarifaUnit="$/mes"/>
             </Section>
 
-            {GROUPS.filter(g=>!["flota","oae_disp","oae_util","oae_yield","oae_cal","diaria","corp"].includes(g.id)).map(g=>(
+            {GROUPS.filter(g=>!["flota","oae_disp","oae_util","oae_yield","oae_cal"].includes(g.id)).map(g=>(
               <Section key={g.id} title={g.label} open={!!openSec[g.id]} onToggle={()=>toggleSec(g.id)}>
                 {Object.entries(g.params).map(([k,v])=>(<ParamRow key={k} k={k} p={v} val={params[k]||v} onChange={handleChange}/>))}
               </Section>
@@ -791,16 +865,35 @@ export default function SimuladorRentaAutos(){
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(280px,1fr))",gap:14}}>
               {[
                 {title:"⚙️ Disponibilidad",color:C.teal,val:S_.D.p50,brecha:S_.brecha_disp.p50,
-                  factores:[["Mant. preventivo",params.mant_preventivo_pct.mean,"%"],["Mant. correctivo",params.mant_correctivo_pct.mean,"%"],["Siniestros",params.siniestro_disp_pct.mean,"%"],["Prep./entrega",params.prep_entrega_pct.mean,"%"]],
-                  lectura:"Cp → Cd: días que el vehículo no puede ser rentado por causas internas."},
+                  factores:[
+                    ["Alistamiento/rotación",  pct(S_.pct_alist.p50), `(${params.h_alistamiento.mean}h × ${params.contratos_mes_auto.mean} contratos/mes)`],
+                    ["Mant. preventivo",        pct(S_.pct_prev.p50),  `(${params.h_mant_prev.mean}h/mes)`],
+                    ["Reparación correctiva",   pct(S_.pct_rep.p50),   `(${params.h_reparacion.mean}h × ${params.frec_reparacion.mean} eventos/mes)`],
+                    ["Siniestros",              pct(S_.pct_sin.p50),   `(${params.tasa_siniestros.mean} sin/año × ${params.dias_siniestro.mean}d)`],
+                    ["Jornada base",            params.horas_jornada.mean+"h/día", `${params.dias_mes.mean} días/mes`],
+                  ],
+                  lectura:"Cp → Cd: tiempo que el vehículo no puede ser rentado por causas internas, calculado desde KPIs operativos reales."},
                 {title:"📅 Utilización",color:C.blue,val:S_.U.p50,brecha:S_.brecha_util.p50,
-                  factores:[["No-shows/cancelaciones",params.noshow_pct.mean,"%"],["Turnaround entre contratos",params.turnaround_pct.mean,"%"],["Estacionalidad baja",params.estacionalidad_pct.mean,"%"]],
+                  factores:[
+                    ["No-shows/cancelaciones",  pct(params.noshow_pct.mean/100),         `(${params.noshow_pct.mean}% de contratos)`],
+                    ["Turnaround entre contratos",pct(params.turnaround_pct.mean/100),    `(${params.turnaround_pct.mean}% días disponibles)`],
+                    ["Estacionalidad baja",      pct(params.estacionalidad_pct.mean/100), `(${params.estacionalidad_pct.mean}% reducción promedio)`],
+                  ],
                   lectura:"Cd → Cu: días disponibles que no generan renta por causas comerciales."},
                 {title:"💲 Yield",color:C.orange,val:S_.Y.p50,brecha:S_.brecha_yield.p50,
-                  factores:[["Upgrades gratuitos",params.upgrade_gratuito_pct.mean,"%"],["Brecha tarifa negociada",params.tarifa_negociada_pct.mean,"%"],["Desc. mix pond.",descMixMedio(mixDiaria).toFixed(1),"%"]],
+                  factores:[
+                    ["Upgrades gratuitos",        pct(params.upgrade_gratuito_pct.mean/100), `(${params.upgrade_gratuito_pct.mean}% de contratos diarios)`],
+                    ["Brecha tarifa negociada",   pct(params.tarifa_negociada_pct.mean/100), `(vs. tarifa rack)`],
+                    ["Desc. mix pond. (diaria)",  pct(descMixMedio(mixDiaria)/100),          `(promedio ponderado por categoría)`],
+                  ],
                   lectura:"Cu → Vc: diferencia entre tarifa rack y precio efectivamente cobrado."},
                 {title:"⭐ Calidad",color:C.purple,val:S_.Q.p50,brecha:S_.brecha_cal.p50,
-                  factores:[["Daños no cobrados",params.danos_no_cobrados.mean,"%"],["No-shows sin cargo",params.noshow_sin_cargo.mean,"%"],["Reclamos seguro",params.reclamos_seguro.mean,"%"],["Compensaciones",params.compensaciones.mean,"%"]],
+                  factores:[
+                    ["Daños no cobrados",         pct(params.danos_no_cobrados.mean/100),  `(% del ingreso cobrado)`],
+                    ["No-shows sin cargo",         pct(params.noshow_sin_cargo.mean/100),   `(% del ingreso cobrado)`],
+                    ["Reclamos seguro pendientes", pct(params.reclamos_seguro.mean/100),    `(% del ingreso cobrado)`],
+                    ["Compensaciones/quejas",      pct(params.compensaciones.mean/100),     `(% del ingreso cobrado)`],
+                  ],
                   lectura:"Vc → Ve: ingreso cobrado que no llega como valor entregado neto."},
               ].map(({title,color,val,brecha,factores,lectura})=>(
                 <div key={title} style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"16px 18px",borderTop:`3px solid ${color}`}}>
@@ -809,10 +902,13 @@ export default function SimuladorRentaAutos(){
                     <div style={{fontFamily:mono,fontSize:18,fontWeight:800,color}}>{pct(val)}</div>
                   </div>
                   <div style={{fontSize:10,color:C.muted,marginBottom:10,fontStyle:"italic"}}>{lectura}</div>
-                  {factores.map(([l,v,u])=>(
-                    <div key={l} style={{display:"flex",justifyContent:"space-between",fontSize:11,padding:"4px 0",borderBottom:`1px solid ${C.border}`}}>
-                      <span style={{color:C.muted}}>{l}</span>
-                      <span style={{fontFamily:mono,fontWeight:600,color:+v>8?C.red:+v>4?C.orange:C.text}}>{v}{u}</span>
+                  {factores.map(([l,v,note])=>(
+                    <div key={l} style={{padding:"5px 0",borderBottom:`1px solid ${C.border}`}}>
+                      <div style={{display:"flex",justifyContent:"space-between",fontSize:11}}>
+                        <span style={{color:C.muted}}>{l}</span>
+                        <span style={{fontFamily:mono,fontWeight:600,color:C.text}}>{v}</span>
+                      </div>
+                      {note&&<div style={{fontSize:10,color:C.muted,marginTop:1}}>{note}</div>}
                     </div>
                   ))}
                   <div style={{marginTop:10,padding:"8px 10px",background:`${color}10`,borderRadius:6}}>
