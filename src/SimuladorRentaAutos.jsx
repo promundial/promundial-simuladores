@@ -569,7 +569,7 @@ const LEVER_DIR = {
   alquiler_oficinas:-1, alquiler_parqueo:-1, marketing_mes:-1,
 };
 
-function goalSeekRA({params, mixD, mixC, metric, target, conf, levers, maxIter=20, simN=400}){
+function goalSeekRA({params, mixD, mixC, metric, target, conf, levers, maxIter=40, simN=600}){
   let cur = {}; Object.entries(params).forEach(([k,v]) => cur[k] = {...v});
   const log = [], checkP = 100 - conf;
 
@@ -590,8 +590,8 @@ function goalSeekRA({params, mixD, mixC, metric, target, conf, levers, maxIter=2
       const delta = 0.05;
       const pUp = {...cur, [k]:{...cur[k], mean: Math.min(cur[k].max, cur[k].mean*(1+delta))}};
       const pDn = {...cur, [k]:{...cur[k], mean: Math.max(cur[k].min, cur[k].mean*(1-delta))}};
-      const vUp = pctle(Array.from({length:200},()=>simOne(pUp,mixD,mixC)).map(r=>r[metric]).sort((a,b)=>a-b), checkP);
-      const vDn = pctle(Array.from({length:200},()=>simOne(pDn,mixD,mixC)).map(r=>r[metric]).sort((a,b)=>a-b), checkP);
+      const vUp = pctle(Array.from({length:300},()=>simOne(pUp,mixD,mixC)).map(r=>r[metric]).sort((a,b)=>a-b), checkP);
+      const vDn = pctle(Array.from({length:300},()=>simOne(pDn,mixD,mixC)).map(r=>r[metric]).sort((a,b)=>a-b), checkP);
       sens[k] = (vUp - vDn) / (2 * delta);
       totS += Math.abs(sens[k]);
     });
