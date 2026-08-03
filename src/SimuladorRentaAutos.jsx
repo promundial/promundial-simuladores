@@ -330,6 +330,22 @@ function simOne(p,mixD,mixC){
   // Margen DPU: cuánto del RevPAC se consume solo en depreciación
   const dpu_coverage = revpac > 0 ? dpu / revpac : 0;
 
+  // ── Costo de oportunidad del mix corporativo ───────────────────────
+  // ¿Cuánto deja de ganar la empresa por tener flota_c en corporativo
+  // vs. ponerla toda en renta diaria al precio rack?
+  // CO = flota_c × 365 × ocup_c × (tarifa_d_rack − tarifa_c_dia_equiv_neta)
+  // Solo es "costo" si tarifa diaria > tarifa corp equivalente
+  const tarifa_c_dia_neta = tarifa_c_rack * Y_c / DAYS_PER_MONTH; // $/día neto corp
+  const tarifa_d_neta = tarifa_d_rack * Y_d;                        // $/día neto diaria
+  const gap_por_dia = tarifa_d_neta - tarifa_c_dia_neta;            // diferencia $/día
+  // Días efectivamente rentados en flota corp por año
+  const dias_corp_rentados = flota_c * 365 * ocup_c * D;
+  const costo_oportunidad = Math.max(0, gap_por_dia * dias_corp_rentados);
+  // También calculamos el beneficio de estabilidad: ingresos garantizados del corporativo
+  const ingresos_corp_garantizados = Vc_c * Q; // Ve del canal corporativo
+  // Ratio: por cada $ de costo de oportunidad, cuánto se garantiza en revenue estable
+  const ratio_estabilidad = costo_oportunidad > 0 ? ingresos_corp_garantizados / costo_oportunidad : 0;
+
   return {
     // P&L
     rev_total, ebitda, ebit, ebt, util_neta, eva,
@@ -340,6 +356,8 @@ function simOne(p,mixD,mixC){
     margen_neto:   rev_total > 0 ? util_neta / rev_total : 0,
     roic, rev_por_auto: rev_total / flota_total,
     dpu, revpac, dpu_coverage,
+    costo_oportunidad, ingresos_corp_garantizados, ratio_estabilidad,
+    tarifa_c_dia_neta, tarifa_d_neta, gap_por_dia,
     // OAE
     D, U, Y: Y_pond, Q, OAE,
     Pe: Cp, Pe_capturado,
@@ -362,6 +380,8 @@ function runSim(params, mixD, mixC, N=3000){
     "rev_total","ebitda","ebit","ebt","util_neta","eva","dep_anual","intereses","impuesto","nopat",
     "costo_flota","costo_personal","gastos_fijos","val_total_flota","deuda",
     "margen_ebitda","margen_neto","roic","rev_por_auto","dpu","revpac","dpu_coverage",
+    "costo_oportunidad","ingresos_corp_garantizados","ratio_estabilidad",
+    "tarifa_c_dia_neta","tarifa_d_neta","gap_por_dia",
     "D","U","Y","Q","OAE","Pe","Pe_capturado",
     "brecha_disp","brecha_util","brecha_yield","brecha_cal",
     "Vc","Ve","tarifa_d_net","tarifa_c_net","val_d","val_c",
@@ -488,6 +508,7 @@ function MixTable({mix,setMix,tarifaUnit}){
           ["Valor flota pond. μ","$"+fmtF(Math.round(vMed)),C.navy],
           ["Vida útil pond.","$"+vidaMixMedia(mix).toFixed(1)+" yr",C.teal],
           ["Residual pond.",residualMixMedio(mix).toFixed(1)+"%",C.orange],
+          ...(!esD?[["Tarifa neta/día equiv.","$"+(tNeta/30.44).toFixed(2)+"/día",C.teal]]:[])
         ].map(([l,v,col])=>(
           <div key={l}><div style={{fontSize:10,color:C.muted}}>{l}</div><div style={{fontSize:15,fontWeight:700,color:col,fontFamily:mono}}>{v}</div></div>
         ))}
@@ -498,7 +519,7 @@ function MixTable({mix,setMix,tarifaUnit}){
       <div style={{overflowX:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
           <thead><tr style={{background:C.deep,color:"#fff"}}>
-            {["Categoría","% Mix μ","% Mix σ",`Tarifa μ (${tarifaUnit})`,`Tarifa σ`,"Desc % μ","Desc % σ","Valor ($)","Vida (yr)","Residual (%)","Tarifa Neta μ"].map(h=>(
+            {["Categoría","% Mix μ","% Mix σ",`Tarifa μ (${tarifaUnit})`,`Tarifa σ`,"Desc % μ","Desc % σ","Valor ($)","Vida (yr)","Residual (%)","Tarifa Neta μ","$/día equiv."].map(h=>(
               <th key={h} style={{padding:"6px 8px",textAlign:"left",fontFamily:mono,fontWeight:600,whiteSpace:"nowrap"}}>{h}</th>
             ))}</tr></thead>
           <tbody>{mix.map((c,i)=>{
@@ -517,6 +538,9 @@ function MixTable({mix,setMix,tarifaUnit}){
               <td style={{padding:"4px 8px",fontFamily:mono,textAlign:"right"}}>
                 <span style={{color:C.deep,fontWeight:600}}>{esD?"$"+neta.toFixed(2):"$"+fmtF(Math.round(neta))}</span>
                 <span style={{color:dp>10?C.red:C.muted,fontSize:10,marginLeft:4}}>−{dp.toFixed(1)}% ({(w*100).toFixed(1)}%)</span>
+              </td>
+              <td style={{padding:"4px 8px",fontFamily:mono,textAlign:"right",color:C.teal,fontWeight:600}}>
+                {esD ? <span style={{color:C.muted,fontSize:10}}>—</span> : "$"+(c.tarifa_mean/30.44).toFixed(2)}
               </td>
             </tr>);
           })}</tbody>
@@ -830,6 +854,68 @@ export default function SimuladorRentaAutos(){
                   <div style={{fontSize:10,color:C.muted}}>DPU ÷ tarifa diaria neta</div>
                   <div style={{fontSize:10,color:C.muted,marginTop:4,fontStyle:"italic"}}>
                     Días mínimos rentado/mes solo para pagar la depreciación
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Costo de Oportunidad del Mix Corporativo */}
+            <div style={{background:C.card,borderRadius:10,border:`1px solid ${C.border}`,padding:"18px 20px",marginBottom:14,borderTop:`3px solid ${C.orange}`}}>
+              <div style={{fontSize:13,fontWeight:700,color:C.deep,marginBottom:4}}>⚖️ Costo de Oportunidad — Mix Corporativo vs. Renta Diaria</div>
+              <div style={{fontSize:11,color:C.muted,marginBottom:14}}>
+                Cuánto deja de ganar la empresa por destinar flota al canal corporativo (tarifa/día menor) en lugar de renta diaria. No es ineficiencia — es el precio de la estabilidad contractual.
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:12,marginBottom:16}}>
+                {[
+                  ["Tarifa diaria neta",       "$"+S_.tarifa_d_neta.p50.toFixed(2)+"/día",       C.blue,   "Canal diario (rack − descuentos)"],
+                  ["Tarifa corp. neta/día",     "$"+S_.tarifa_c_dia_neta.p50.toFixed(2)+"/día",   C.orange, "Tarifa mensual neta ÷ 30.44"],
+                  ["Gap por día rentado",       (S_.gap_por_dia.p50>0?"−$":"$")+Math.abs(S_.gap_por_dia.p50).toFixed(2)+"/día",
+                                                S_.gap_por_dia.p50>0?C.red:C.green,              "Diaria − corp equiv."],
+                  ["Costo oportunidad anual",   fmt$(S_.costo_oportunidad.p50),                   S_.costo_oportunidad.p50>0?C.red:C.green, `P10 ${fmt$(S_.costo_oportunidad.p10)} · P90 ${fmt$(S_.costo_oportunidad.p90)}`],
+                ].map(([l,v,col,sub])=>(
+                  <div key={l} style={{background:C.light,borderRadius:8,padding:"14px 16px",border:`1px solid ${C.border}`}}>
+                    <div style={{fontSize:10,color:C.muted,textTransform:"uppercase",letterSpacing:1}}>{l}</div>
+                    <div style={{fontSize:20,fontWeight:800,color:col,fontFamily:mono,margin:"6px 0 3px"}}>{v}</div>
+                    <div style={{fontSize:10,color:C.muted}}>{sub}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Veredicto */}
+              <div style={{background:`${C.navy}08`,borderRadius:8,padding:"14px 16px",border:`1px solid ${C.navy}20`}}>
+                <div style={{fontSize:12,fontWeight:700,color:C.deep,marginBottom:10}}>📊 ¿Vale la pena el canal corporativo?</div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:12}}>
+                  <div>
+                    <div style={{fontSize:10,color:C.muted}}>Revenue garantizado corp. (anual)</div>
+                    <div style={{fontSize:18,fontWeight:700,color:C.green,fontFamily:mono}}>{fmt$(S_.ingresos_corp_garantizados.p50)}</div>
+                    <div style={{fontSize:10,color:C.muted,marginTop:2}}>Ingreso neto entregado canal corp.</div>
+                  </div>
+                  <div>
+                    <div style={{fontSize:10,color:C.muted}}>Costo de oportunidad cedido</div>
+                    <div style={{fontSize:18,fontWeight:700,color:C.red,fontFamily:mono}}>{fmt$(S_.costo_oportunidad.p50)}</div>
+                    <div style={{fontSize:10,color:C.muted,marginTop:2}}>Vs. todo en renta diaria</div>
+                  </div>
+                  <div>
+                    <div style={{fontSize:10,color:C.muted}}>Ratio estabilidad</div>
+                    <div style={{fontSize:18,fontWeight:700,fontFamily:mono,
+                      color:S_.ratio_estabilidad.p50>3?C.green:S_.ratio_estabilidad.p50>1.5?C.orange:C.red}}>
+                      {S_.ratio_estabilidad.p50.toFixed(1)}x
+                    </div>
+                    <div style={{fontSize:10,color:C.muted,marginTop:2}}>Revenue corp. / costo oportunidad</div>
+                  </div>
+                  <div style={{padding:"10px 12px",background:C.card,borderRadius:6,border:`1px solid ${C.border}`}}>
+                    <div style={{fontSize:11,fontWeight:700,color:C.deep,marginBottom:4}}>
+                      {S_.ratio_estabilidad.p50>3?"✅ Canal corporativo justificado":
+                       S_.ratio_estabilidad.p50>1.5?"⚠️ Aceptable — revisar mix de flota":
+                       "❌ Canal corp. destruye valor vs. diario"}
+                    </div>
+                    <div style={{fontSize:10,color:C.muted,lineHeight:1.5}}>
+                      {S_.ratio_estabilidad.p50>3?
+                        `Por cada ${fmt$(S_.costo_oportunidad.p50)} cedido, se garantizan ${fmt$(S_.ingresos_corp_garantizados.p50)} en revenue estable.`:
+                       S_.ratio_estabilidad.p50>1.5?
+                        "El corporativo genera más de lo que cede, pero el margen es estrecho. Considera renegociar tarifas o reducir la flota corp.":
+                        "El canal diario generaría más revenue. Evalúa reducir la flota corporativa o subir tarifas de contrato."}
+                    </div>
                   </div>
                 </div>
               </div>
